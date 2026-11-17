@@ -57,8 +57,17 @@ API 密钥永不出现在任何接口响应里（只回显 `…后四位`）；�
 # venv 必须放在包目录外：这个目录会被整体复制进 ~/.hermes/desktop-plugins/（树上限 64MB）
 python3.11 -m venv ../.venv-imagegen
 ../.venv-imagegen/bin/pip install -r requirements-dev.txt
-../.venv-imagegen/bin/python -m pytest tests -q     # 50 项测试，全部离线（MockTransport）
+../.venv-imagegen/bin/python -m pytest tests -q     # 53 项测试，全部离线（MockTransport）
 ../.venv-imagegen/bin/ruff check .
+```
+
+**真实链路自检**（可选，会消耗上游额度，绝不在 CI 跑；数据写临时目录，密钥只从环境变量读）：
+
+```bash
+export IMAGEGEN_LIVE_API_URL=https://your-relay.example.com/v1
+export IMAGEGEN_LIVE_KEY_ENV=MY_IMAGE_API_KEY   # 环境变量名，密钥本身不落盘
+export MY_IMAGE_API_KEY=sk-…
+python scripts/live_check.py    # 建渠道 → 检测模型 → 生成一张 → 取图 → 查历史
 ```
 
 本地联调：把 checkout 软链进插件目录（`linked` 开发模式，保存即热重载，无需 Rescan）：

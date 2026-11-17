@@ -2,6 +2,6 @@
   "name": "hermes-imagegen",
   "label": "ImageGen",
   "description": "AI image generation workbench — text-to-image and image-to-image through your own OpenAI-compatible channels",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "api": "plugin_api.py"
 }

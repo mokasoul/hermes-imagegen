@@ -37,7 +37,7 @@ import {
   useQueryClient,
   useValue
 } from '@hermes/plugin-sdk'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
 const ID = 'hermes-imagegen'
@@ -525,11 +525,22 @@ function StudioView() {
             className: 'flex items-center justify-between text-[0.625rem] text-(--ui-text-quaternary)',
             children: [
               jsx('span', { children: `${draft.prompt.length} 字` }),
-              jsx('button', {
-                className: 'hover:text-foreground',
-                onClick: () => patchDraft({ prompt: '' }),
-                type: 'button',
-                children: '清空提示词'
+              jsxs('div', {
+                className: 'flex items-center gap-2',
+                children: [
+                  jsx('button', {
+                    className: 'hover:text-foreground',
+                    onClick: () => $view.set('templates'),
+                    type: 'button',
+                    children: '从模板库挑'
+                  }),
+                  jsx('button', {
+                    className: 'hover:text-foreground',
+                    onClick: () => patchDraft({ prompt: '' }),
+                    type: 'button',
+                    children: '清空提示词'
+                  })
+                ]
               })
             ]
           }),
@@ -1065,10 +1076,266 @@ function HistoryView() {
   })
 }
 
+// ── templates ──────────────────────────────────────────────────────────────
+
+function TemplateThumb({ source, caseId }) {
+  const query = useQuery({
+    queryKey: ['hermes-imagegen', 'template', source, caseId],
+    queryFn: () => api.rest(`/templates/image/${source}/${caseId}/inline`),
+    staleTime: Infinity,
+    gcTime: 30 * 60 * 1000,
+    retry: 1
+  })
+  if (query.isPending) {
+    return jsx('div', { className: 'aspect-[4/3] w-full animate-pulse rounded-[4px] bg-(--ui-bg-tertiary)' })
+  }
+  if (query.error) {
+    return jsx('div', {
+      className: 'flex aspect-[4/3] w-full items-center justify-center rounded-[4px] bg-(--ui-bg-tertiary) text-[0.625rem] text-(--ui-text-quaternary)',
+      children: '参考图不可用'
+    })
+  }
+  return jsx('img', {
+    alt: caseId,
+    className: 'aspect-[4/3] w-full rounded-[4px] border border-(--ui-stroke-secondary) object-cover',
+    src: query.data?.data_url || ''
+  })
+}
+
+function TemplateCard({ source, item, favorited, onUse, onToggleFavorite }) {
+  return jsxs('div', {
+    className: 'flex flex-col gap-1 rounded-[5px] border border-(--ui-stroke-secondary) p-1.5',
+    children: [
+      jsx(TemplateThumb, { source, caseId: item.id }),
+      jsx('div', { className: 'line-clamp-2 text-[0.6875rem] font-medium', children: item.title || item.id }),
+      jsxs('div', {
+        className: 'flex items-center gap-1 text-[0.625rem] text-(--ui-text-quaternary)',
+        children: [
+          jsx('span', { className: 'truncate', children: item.categoryZh || item.category }),
+          item.sourceLabel ? jsx('span', { className: 'truncate', children: `· ${item.sourceLabel}` }) : null,
+          jsx('span', { className: 'flex-1' }),
+          jsx('button', {
+            className: cn('hover:text-foreground', favorited ? 'text-(--ui-accent)' : ''),
+            onClick: () => onToggleFavorite(item),
+            type: 'button',
+            children: favorited ? '♥' : '♡'
+          }),
+          jsx(Button, { size: 'xs', variant: 'ghost', onClick: () => onUse(item), children: '用这条' })
+        ]
+      })
+    ]
+  })
+}
+
+function TemplatesView() {
+  const [sources, setSources] = useState([])
+  const [source, setSource] = useState('vibeui')
+  const [query, setQuery] = useState('')
+  const [category, setCategory] = useState('')
+  const [categories, setCategories] = useState([])
+  const [items, setItems] = useState([])
+  const [total, setTotal] = useState(0)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [favorites, setFavorites] = useState([])
+  const [favoritesOnly, setFavoritesOnly] = useState(false)
+  const [refreshable, setRefreshable] = useState(false)
+
+  const favoriteKeys = useMemo(() => new Set(favorites.map(entry => `${entry.sourceId}:${entry.id}`)), [favorites])
+
+  const loadFavorites = useCallback(async () => {
+    try {
+      const data = await api.rest('/templates/favorites')
+      setFavorites(data.favorites || [])
+    } catch {
+      setFavorites([])
+    }
+  }, [])
+
+  useEffect(() => {
+    api.rest('/templates/sources')
+      .then(data => setSources(data.sources || []))
+      .catch(readError => setError(errorText(readError)))
+    loadFavorites()
+  }, [loadFavorites])
+
+  const load = useCallback(
+    async (nextSource, offset = 0, options = {}) => {
+      setLoading(true)
+      setError('')
+      try {
+        const params = new URLSearchParams({
+          source: nextSource,
+          q: options.query ?? query,
+          category: options.category ?? category,
+          offset: String(offset),
+          limit: '30'
+        })
+        const data = await api.rest(`/templates/list?${params.toString()}`)
+        setTotal(data.total || 0)
+        setCategories(data.categories || [])
+        setItems(current => (offset === 0 ? data.cases || [] : [...current, ...(data.cases || [])]))
+      } catch (readError) {
+        setError(errorText(readError))
+      } finally {
+        setLoading(false)
+      }
+    },
+    [query, category]
+  )
+
+  useEffect(() => {
+    load(source, 0)
+    const meta = sources.find(entry => entry.id === source)
+    setRefreshable(Boolean(meta && meta.refreshable))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [source, sources.length])
+
+  const use = item => {
+    patchDraft({ prompt: item.prompt, mode: $draft.get().mode })
+    $view.set('studio')
+    haptic('tap')
+  }
+
+  const toggleFavorite = async item => {
+    const key = `${source}:${item.id}`
+    try {
+      const data = favoriteKeys.has(key)
+        ? await api.rest(`/templates/favorites/${source}/${item.id}`, { method: 'DELETE' })
+        : await api.rest('/templates/favorites', { method: 'POST', body: { source, id: item.id } })
+      setFavorites(data.favorites || [])
+    } catch (writeError) {
+      host.notify({ kind: 'error', message: `收藏失败：${errorText(writeError)}` })
+    }
+  }
+
+  const refresh = async () => {
+    setLoading(true)
+    try {
+      const data = await api.rest('/templates/refresh', { method: 'POST', body: { source }, timeoutMs: 60000 })
+      host.notify({ kind: 'info', message: `已刷新：${data.total} 条案例` })
+      await load(source, 0)
+    } catch (readError) {
+      setError(errorText(readError))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const visible = favoritesOnly
+    ? favorites
+        .filter(entry => entry.sourceId === source)
+        .map(entry => ({ id: entry.id, title: entry.title, prompt: entry.prompt, categoryZh: '收藏', sourceLabel: '' }))
+    : items
+
+  return jsxs('div', {
+    className: 'flex h-full min-h-0 flex-col gap-2 p-3',
+    children: [
+      jsxs('div', {
+        className: 'flex flex-wrap items-center gap-2',
+        children: [
+          jsx(SegmentedControl, {
+            onChange: next => {
+              setCategory('')
+              setFavoritesOnly(false)
+              setSource(next)
+            },
+            options: sources.map(entry => ({ id: entry.id, label: entry.label || entry.id })),
+            sizing: 'content',
+            value: source
+          }),
+          jsx('span', { className: 'flex-1' }),
+          refreshable
+            ? jsx(Button, { size: 'xs', variant: 'ghost', disabled: loading, onClick: refresh, children: '从源站刷新' })
+            : null,
+          jsx(Button, {
+            size: 'xs',
+            variant: favoritesOnly ? 'default' : 'ghost',
+            onClick: () => setFavoritesOnly(value => !value),
+            children: `收藏 ${favorites.filter(entry => entry.sourceId === source).length}`
+          })
+        ]
+      }),
+      jsxs('div', {
+        className: 'flex items-center gap-2',
+        children: [
+          jsx(Input, {
+            className: 'h-8 w-[240px] text-xs',
+            placeholder: '搜索标题 / 提示词 / 标签，回车',
+            value: query,
+            onChange: event => setQuery(event.target.value),
+            onKeyDown: event => {
+              if (event.key === 'Enter') load(source, 0, { query: event.target.value })
+            }
+          }),
+          jsx(Select, {
+            value: category || '__all__',
+            onValueChange: value => {
+              const next = value === '__all__' ? '' : value
+              setCategory(next)
+              setFavoritesOnly(false)
+              load(source, 0, { category: next })
+            },
+            children: [
+              jsx(SelectTrigger, { className: 'h-8 w-[180px] text-xs', children: jsx(SelectValue, { placeholder: '全部分类' }) }),
+              jsx(SelectContent, {
+                children: [
+                  jsx(SelectItem, { value: '__all__', children: '全部分类' }),
+                  ...categories.map(entry => jsx(SelectItem, { value: entry.id, children: entry.label }, entry.id))
+                ]
+              })
+            ]
+          }),
+          jsx('span', { className: 'text-[0.6875rem] text-(--ui-text-tertiary)', children: `共 ${favoritesOnly ? visible.length : total} 条` }),
+          loading ? jsx(GlyphSpinner, {}) : null
+        ]
+      }),
+      error ? jsx('div', { className: 'text-[0.6875rem] text-(--ui-danger)', children: error }) : null,
+      visible.length === 0 && !loading
+        ? jsx(EmptyState, {
+            className: 'flex-1',
+            description: favoritesOnly ? '还没有收藏的模板。点卡片右下角的 ♡ 收藏。' : '换个关键词或分类试试。',
+            title: favoritesOnly ? '没有收藏' : '没有匹配的案例'
+          })
+        : jsx('div', {
+            className: 'min-h-0 flex-1 overflow-y-auto',
+            children: jsxs('div', {
+              className: 'grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-2',
+              children: [
+                ...visible.map(item =>
+                  jsx(TemplateCard, {
+                    key: `${source}:${item.id}`,
+                    source,
+                    item,
+                    favorited: favoriteKeys.has(`${source}:${item.id}`),
+                    onUse: use,
+                    onToggleFavorite: toggleFavorite
+                  })
+                ),
+                !favoritesOnly && items.length < total
+                  ? jsx('div', {
+                      className: 'col-span-full flex justify-center py-2',
+                      children: jsx(Button, {
+                        size: 'xs',
+                        variant: 'outline',
+                        disabled: loading,
+                        onClick: () => load(source, items.length),
+                        children: loading ? '加载中…' : '加载更多'
+                      })
+                    })
+                  : null
+              ]
+            })
+          })
+    ]
+  })
+}
+
 // ── page ───────────────────────────────────────────────────────────────────
 
 const VIEWS = [
   { id: 'studio', label: '工作室' },
+  { id: 'templates', label: '模板' },
   { id: 'history', label: '历史' },
   { id: 'channels', label: '渠道' }
 ]
@@ -1091,9 +1358,11 @@ function ImageGenPage() {
   const body =
     view === 'channels'
       ? jsx(ChannelsView, {})
-      : view === 'history'
-        ? jsx(HistoryView, {})
-        : jsx(StudioView, {})
+      : view === 'templates'
+        ? jsx(TemplatesView, {})
+        : view === 'history'
+          ? jsx(HistoryView, {})
+          : jsx(StudioView, {})
 
   return jsxs('div', {
     className: 'flex h-full min-h-0 flex-col',

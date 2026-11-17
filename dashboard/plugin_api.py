@@ -31,7 +31,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse
 
 # The backend package sits beside this file; the gateway imports the api module
@@ -42,6 +42,7 @@ if str(_HERE) not in sys.path:
 
 from imagegen_backend import engine as image_engine  # noqa: E402
 from imagegen_backend import runtime  # noqa: E402
+from imagegen_backend import templates as template_library  # noqa: E402
 from imagegen_backend.jobs import JobError, JobRunner  # noqa: E402
 from imagegen_backend.settings import Settings, SettingsError  # noqa: E402
 from imagegen_backend.store import HistoryStore  # noqa: E402
@@ -267,3 +268,99 @@ async def image_inline(image_id: str) -> dict[str, Any]:
         "mime": mime,
         "data_url": f"data:{mime};base64,{base64.b64encode(data).decode()}",
     }
+
+
+# --- prompt-template library --------------------------------------------
+
+
+@router.get("/templates/sources")
+async def template_sources() -> dict[str, Any]:
+    return {"sources": template_library.source_meta()}
+
+
+@router.get("/templates/list")
+async def template_list(
+    source: str = Query(template_library.DEFAULT_SOURCE),
+    q: str = Query(""),
+    category: str = Query(""),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(60, ge=1, le=120),
+) -> dict[str, Any]:
+    try:
+        return template_library.library().list(source, query=q, category=category, offset=offset, limit=limit)
+    except template_library.TemplateError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.get("/templates/sample")
+async def template_sample(
+    source: str = Query(template_library.DEFAULT_SOURCE),
+    id: str = Query(...),
+) -> dict[str, Any]:
+    try:
+        return {"case": template_library.library().sample(source, id)}
+    except template_library.TemplateError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@router.get("/templates/image/{source_id}/{case_id}")
+async def template_image(source_id: str, case_id: str) -> Response:
+    """Serve one case's reference image, fetched once and cached on disk.
+
+    The image URL is resolved from the loaded case, so a request can never make
+    the gateway fetch an arbitrary address.
+    """
+    try:
+        data, mime = await template_library.library().image(source_id, case_id)
+    except template_library.TemplateError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    return Response(
+        content=data,
+        media_type=mime,
+        headers={"cache-control": "private, max-age=604800"},
+    )
+
+
+@router.get("/templates/image/{source_id}/{case_id}/inline")
+async def template_image_inline(source_id: str, case_id: str) -> dict[str, Any]:
+    """Same bytes as the file route, as a data URL — the renderer's only read path."""
+    try:
+        data, mime = await template_library.library().image(source_id, case_id)
+    except template_library.TemplateError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    return {
+        "sourceId": source_id,
+        "id": case_id,
+        "mime": mime,
+        "data_url": f"data:{mime};base64,{base64.b64encode(data).decode()}",
+    }
+
+
+@router.post("/templates/refresh")
+async def template_refresh(body: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return await template_library.library().refresh(str(body.get("source") or template_library.DEFAULT_SOURCE))
+    except template_library.TemplateError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.get("/templates/favorites")
+async def template_favorites() -> dict[str, Any]:
+    return {"favorites": template_library.library().favorites()}
+
+
+@router.post("/templates/favorites")
+async def template_favorite_add(body: dict[str, Any]) -> dict[str, Any]:
+    source = str(body.get("source") or template_library.DEFAULT_SOURCE)
+    case_id = str(body.get("id") or "")
+    if not case_id:
+        raise HTTPException(status_code=400, detail="id 不能为空")
+    try:
+        return template_library.library().add_favorite(source, case_id)
+    except template_library.TemplateError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@router.delete("/templates/favorites/{source_id}/{case_id}")
+async def template_favorite_remove(source_id: str, case_id: str) -> dict[str, Any]:
+    return template_library.library().remove_favorite(source_id, case_id)

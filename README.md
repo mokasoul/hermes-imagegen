@@ -20,7 +20,7 @@
 | 按模型族塑形请求体（gpt-image / dall-e / grok / nanobanana / seedream / sensenova / zhipu） | ✅ |
 | 异步任务轮询（`task_id` → `GET /tasks/{id}`，含 ModelScope 头） | ✅ |
 | 历史记录（SQLite）+ 图片落盘 + 服务端取图 | ✅ |
-| 桌面工作台 UI | ⏳ PR2 |
+| 桌面工作台（`/imagegen` 整页 + 侧边栏入口 + ⌘K 命令：提示词、模式、渠道/模型、比例、清晰度、数量、参考图、结果下载/复用、参数记忆） | ✅ |
 | 历史 / 画廊界面 | ⏳ PR3 |
 | 无限画布、海报编辑、电商套图、PPT、提示词反推、模板库、订阅渠道、Chat-Completions、DashScope/MiniMax 原生协议 | ❌ 未移植 |
 
@@ -54,11 +54,21 @@ API 密钥永不出现在任何接口响应里（只回显 `…后四位`）；�
 ## 开发
 
 ```bash
-python3.11 -m venv .venv
-.venv/bin/pip install -r requirements-dev.txt
-.venv/bin/python -m pytest tests -q     # 49 项测试，全部离线（MockTransport）
-.venv/bin/ruff check .
+# venv 必须放在包目录外：这个目录会被整体复制进 ~/.hermes/desktop-plugins/（树上限 64MB）
+python3.11 -m venv ../.venv-imagegen
+../.venv-imagegen/bin/pip install -r requirements-dev.txt
+../.venv-imagegen/bin/python -m pytest tests -q     # 50 项测试，全部离线（MockTransport）
+../.venv-imagegen/bin/ruff check .
 ```
+
+本地联调：把 checkout 软链进插件目录（`linked` 开发模式，保存即热重载，无需 Rescan）：
+
+```bash
+ln -s "$PWD" ~/.hermes/plugins/hermes-imagegen
+hermes plugins enable hermes-imagegen
+```
+
+桌面半仍是 opt-in：Hermes Desktop → Capabilities → Plugins → 打开 `hermes-imagegen`。
 
 目录结构：
 

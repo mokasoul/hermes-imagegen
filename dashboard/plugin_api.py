@@ -41,6 +41,7 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 from imagegen_backend import canvas as canvas_store  # noqa: E402
+from imagegen_backend import ecommerce as ecommerce_kit  # noqa: E402
 from imagegen_backend import engine as image_engine  # noqa: E402
 from imagegen_backend import poster as poster_kit  # noqa: E402
 from imagegen_backend import prompt_tools, runtime  # noqa: E402
@@ -270,6 +271,30 @@ async def image_inline(image_id: str) -> dict[str, Any]:
         "mime": mime,
         "data_url": f"data:{mime};base64,{base64.b64encode(data).decode()}",
     }
+
+
+# --- e-commerce product sets --------------------------------------------
+
+
+@router.get("/ecommerce/slots")
+async def ecommerce_slots() -> dict[str, Any]:
+    return {
+        "slots": ecommerce_kit.slot_presets(),
+        "roles": ecommerce_kit.ROLE_LABELS,
+        "anchorPrefix": ecommerce_kit.ANCHOR_PREFIX,
+        "defaultInfo": ecommerce_kit.DEFAULT_INFO,
+    }
+
+
+@router.post("/ecommerce/plan")
+async def ecommerce_plan(body: dict[str, Any]) -> dict[str, Any]:
+    draft = body.get("draft", body)
+    if not isinstance(draft, dict):
+        raise HTTPException(status_code=400, detail="缺少 draft")
+    try:
+        return ecommerce_kit.plan(draft)
+    except ecommerce_kit.EcommerceError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
 
 
 # --- infinite canvas -----------------------------------------------------

@@ -2418,10 +2418,256 @@ function CanvasView() {
   })
 }
 
+// ── e-commerce sets ────────────────────────────────────────────────────────
+
+const ECOMMERCE_ROLES = ['product', 'packaging', 'detail', 'style']
+
+function EcommerceView() {
+  const draftSource = useValue($draft)
+  const [meta, setMeta] = useState({ slots: [], roles: {}, anchorPrefix: '', defaultInfo: '' })
+  const [form, setForm] = useState({
+    projectName: '',
+    productName: '',
+    category: '',
+    platform: '抖音',
+    language: '中文',
+    size: '1:1',
+    promptInfo: ''
+  })
+  const [slots, setSlots] = useState([])
+  const [assets, setAssets] = useState([]) // {role, name, dataUrl}
+  const [planData, setPlanData] = useState(null)
+  const [overrides, setOverrides] = useState({})
+  const [results, setResults] = useState({}) // key -> {status, images:[{id,dataUrl}], error}
+  const [progress, setProgress] = useState({ done: 0, total: 0 })
+  const [busy, setBusy] = useState('')
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    api.rest('/ecommerce/slots')
+      .then(data => {
+        setMeta(data)
+        setSlots(data.slots || [])
+        setForm(current => ({ ...current, promptInfo: current.promptInfo || data.defaultInfo || '' }))
+      })
+      .catch(readError => setError(errorText(readError)))
+  }, [])
+
+  const patchForm = patch => setForm(current => ({ ...current, ...patch }))
+
+  const addAsset = role => {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.accept = 'image/*'
+    input.onchange = () => {
+      const file = input.files && input.files[0]
+      if (!file) return
+      const reader = new FileReader()
+      reader.onload = () => {
+        setAssets(current => [...current.filter(entry => entry.role !== role), { role, name: file.name, dataUrl: String(reader.result || '') }])
+      }
+      reader.readAsDataURL(file)
+    }
+    input.click()
+  }
+
+  const previewPlan = async () => {
+    setBusy('plan')
+    setError('')
+    try {
+      const data = await api.rest('/ecommerce/plan', {
+        method: 'POST',
+        body: { draft: { ...form, slots, promptOverrides: overrides } }
+      })
+      setPlanData(data)
+      setResults([])
+      setProgress({ done: 0, total: data.total })
+    } catch (planError) {
+      setError(errorText(planError))
+    } finally {
+      setBusy('')
+    }
+  }
+
+  const assetFor = role => assets.find(entry => entry.role === role)
+
+  const run = async () => {
+    if (!planData) return
+    if (!draftSource.channelId) {
+      setError('先到「渠道」里选一个默认渠道，再回来生成')
+      return
+    }
+    setBusy('run')
+    setError('')
+    let mainImage = null
+    for (let index = 0; index < planData.items.length; index += 1) {
+      const item = planData.items[index]
+      const key = `${item.slotKey}-${item.index}`
+      setProgress({ done: index, total: planData.items.length })
+      const reference = assetFor(item.refRole)
+      const references = []
+      if (mainImage && item.slotKey !== 'main') references.push(mainImage)
+      if (reference) references.push(reference.dataUrl)
+      const prompt = mainImage && item.slotKey !== 'main' ? `${meta.anchorPrefix || ''}${item.prompt}` : item.prompt
+      setResults(current => ({ ...current, [key]: { status: '生成中', images: [] } }))
+      let entry = { status: '生成中', images: [] }
+      try {
+        const submitted = await api.rest('/jobs', {
+          method: 'POST',
+          body: {
+            channel_id: draftSource.channelId,
+            model: draftSource.model || '',
+            mode: references.length ? 'edit' : 'generate',
+            prompt,
+            size: planData.size || form.size,
+            quality: draftSource.quality || 'auto',
+            detail: '',
+            n: 1,
+            references
+          }
+        })
+        const taskId = submitted.job.id
+        let job = null
+        for (let tick = 0; tick < 200; tick += 1) {
+          await new Promise(resolve => setTimeout(resolve, 1500))
+          const polled = await api.rest(`/jobs/${taskId}`)
+          job = polled.job
+          if (['succeeded', 'failed', 'cancelled', 'lost'].includes(job.status)) break
+        }
+        if (!job || job.status !== 'succeeded') {
+          entry = { status: '失败', images: [], error: (job && (job.error || job.status)) || '超时' }
+        } else {
+          const images = []
+          for (const image of job.images || []) {
+            const inline = await api.rest(`/files/${image.id}/inline`)
+            images.push({ id: image.id, dataUrl: inline.data_url })
+          }
+          entry = { status: '完成', images }
+          if (item.slotKey === 'main' && images[0]) mainImage = images[0].dataUrl
+        }
+      } catch (runError) {
+        entry = { status: '失败', images: [], error: errorText(runError) }
+      }
+      setResults(current => ({ ...current, [key]: entry }))
+    }
+    setProgress({ done: planData.items.length, total: planData.items.length })
+    setBusy('')
+    haptic('success')
+  }
+
+  return jsxs('div', {
+    className: 'flex h-full min-h-0 flex-col gap-2 p-3 text-xs',
+    children: [
+      jsxs('div', {
+        className: 'grid grid-cols-[repeat(auto-fit,minmax(160px,1fr))] gap-2',
+        children: [
+          jsx(Input, { className: 'h-8 text-xs', placeholder: '项目名', value: form.projectName, onChange: event => patchForm({ projectName: event.target.value }) }),
+          jsx(Input, { className: 'h-8 text-xs', placeholder: '商品名（一致性锚点）', value: form.productName, onChange: event => patchForm({ productName: event.target.value }) }),
+          jsx(Input, { className: 'h-8 text-xs', placeholder: '品类', value: form.category, onChange: event => patchForm({ category: event.target.value }) }),
+          jsx(Input, { className: 'h-8 text-xs', placeholder: '平台', value: form.platform, onChange: event => patchForm({ platform: event.target.value }) }),
+          jsx(Input, { className: 'h-8 text-xs', placeholder: '语言（中文 / English / custom）', value: form.language, onChange: event => patchForm({ language: event.target.value }) }),
+          jsx(Input, { className: 'h-8 text-xs', placeholder: '比例 1:1', value: form.size, onChange: event => patchForm({ size: event.target.value }) })
+        ]
+      }),
+      jsx(Textarea, {
+        className: 'h-20 w-full resize-none text-xs',
+        placeholder: '商品信息与要求（材质、卖点、包装文字、禁忌…）',
+        value: form.promptInfo,
+        onChange: event => patchForm({ promptInfo: event.target.value })
+      }),
+      jsxs('div', {
+        className: 'flex flex-wrap items-center gap-2',
+        children: [
+          jsx('span', { className: 'text-(--ui-text-tertiary)', children: '参考图：' }),
+          ...ECOMMERCE_ROLES.map(role => {
+            const asset = assetFor(role)
+            return jsxs('span', {
+              className: 'flex items-center gap-1 rounded border border-(--ui-stroke-secondary) px-1.5 py-0.5',
+              children: [
+                jsx('span', { children: `${meta.roles?.[role] || role}` }),
+                jsx('button', { className: 'text-(--ui-accent)', onClick: () => addAsset(role), type: 'button', children: asset ? '✓ 替换' : '上传' })
+              ]
+            }, role)
+          }),
+          jsx('span', { className: 'flex-1' }),
+          jsx(Button, { size: 'xs', variant: 'ghost', disabled: busy === 'plan', onClick: previewPlan, children: busy === 'plan' ? '生成计划中…' : '预览套图计划' })
+        ]
+      }),
+      jsxs('div', {
+        className: 'flex flex-wrap items-center gap-2 rounded border border-(--ui-stroke-secondary) p-1.5',
+        children: slots.map(slot =>
+          jsxs('label', {
+            className: 'flex items-center gap-1',
+            children: [
+              jsx('input', {
+                type: 'checkbox',
+                checked: Boolean(slot.enabled),
+                onChange: event => setSlots(current => current.map(entry => (entry.key === slot.key ? { ...entry, enabled: event.target.checked } : entry)))
+              }),
+              jsx('span', { children: `${slot.label}×${slot.count}` }),
+              jsx('span', { className: 'text-(--ui-text-quaternary)', children: slot.description })
+            ]
+          }, slot.key)
+        )
+      }),
+      error ? jsx('div', { className: 'text-[0.6875rem] text-(--ui-danger)', children: error }) : null,
+      planData
+        ? jsxs('div', {
+            className: 'flex items-center gap-2',
+            children: [
+              jsx(Button, { size: 'xs', disabled: Boolean(busy), onClick: run, children: busy === 'run' ? `生成中 ${progress.done}/${progress.total}` : `开始生成 ${planData.total} 张` }),
+              jsx('span', { className: 'text-(--ui-text-quaternary)', children: `计划：${planData.total} 张 · ${planData.projectName} · 比例 ${planData.size}` }),
+              jsx('span', { className: 'flex-1' }),
+              jsx('Button', { size: 'xs', variant: 'ghost', onClick: () => { setPlanData(null); setResults([]) }, children: '清空计划' })
+            ]
+          })
+        : null,
+      jsx('div', {
+        className: 'min-h-0 flex-1 overflow-y-auto',
+        children: planData
+          ? jsxs('div', {
+              className: 'grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-2',
+              children: planData.items.map((item, order) => {
+                const key = `${item.slotKey}-${item.index}`
+                const done = results[key]
+                return jsxs('div', {
+                  className: 'flex flex-col gap-1 rounded border border-(--ui-stroke-secondary) p-1.5',
+                  children: [
+                    jsxs('div', {
+                      className: 'flex items-center justify-between text-[0.625rem]',
+                      children: [
+                        jsx('span', { children: `${order + 1}. ${item.slotLabel} #${item.index + 1}` }),
+                        jsx('span', { className: done ? (done.status === '失败' ? 'text-(--ui-danger)' : 'text-(--ui-text-tertiary)') : 'text-(--ui-text-quaternary)', children: done ? done.status : '待生成' })
+                      ]
+                    }),
+                    jsx(Textarea, {
+                      className: 'h-24 w-full resize-none text-[0.625rem]',
+                      value: overrides[key] ?? item.prompt,
+                      onChange: event => setOverrides(current => ({ ...current, [key]: event.target.value }))
+                    }),
+                    done && done.images.length
+                      ? jsx('img', { alt: item.slotLabel, className: 'w-full rounded object-contain', src: done.images[0].dataUrl })
+                      : null,
+                    done && done.error ? jsx('div', { className: 'text-[0.625rem] text-(--ui-danger)', children: done.error }) : null
+                  ]
+                }, key)
+              })
+            })
+          : jsx(EmptyState, {
+              className: 'flex-1',
+              title: '先预览套图计划',
+              description: '填商品信息、勾选要出的图，点「预览套图计划」：每张图的提示词都能改，再一键批量生成。'
+            })
+      })
+    ]
+  })
+}
+
 // ── page ───────────────────────────────────────────────────────────────────
 
 const VIEWS = [
   { id: 'studio', label: '工作室' },
+  { id: 'ecommerce', label: '套图' },
   { id: 'templates', label: '模板' },
   { id: 'canvas', label: '画布' },
   { id: 'history', label: '历史' },
@@ -2450,9 +2696,11 @@ function ImageGenPage() {
         ? jsx(TemplatesView, {})
         : view === 'canvas'
           ? jsx(CanvasView, {})
-          : view === 'history'
-            ? jsx(HistoryView, {})
-            : jsx(StudioView, {})
+          : view === 'ecommerce'
+            ? jsx(EcommerceView, {})
+            : view === 'history'
+              ? jsx(HistoryView, {})
+              : jsx(StudioView, {})
 
   return jsxs('div', {
     className: 'flex h-full min-h-0 flex-col',

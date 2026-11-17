@@ -159,6 +159,24 @@ def test_lost_job_is_reported_not_404(client):
     assert response.json()["job"]["status"] == "lost"
 
 
+def test_favorite_endpoint_toggles_and_filters(client, monkeypatch):
+    _add_channel(client)
+    monkeypatch.setattr(image_engine, "generate", _fake_generate())
+    channel_id = client.get("/api/plugins/hermes-imagegen/settings").json()["channels"][0]["id"]
+    created = client.post(
+        "/api/plugins/hermes-imagegen/jobs",
+        json={"channel_id": channel_id, "model": "gpt-image-2", "mode": "generate", "prompt": "a cat"},
+    )
+    job = _wait_job(client, created.json()["job"]["id"])
+    generation_id = job["generation_id"]
+    starred = client.post(f"/api/plugins/hermes-imagegen/history/{generation_id}/favorite", json={"value": True})
+    assert starred.status_code == 200
+    assert starred.json()["generation"]["favorite"] == 1
+    assert client.get("/api/plugins/hermes-imagegen/history?favorite=true").json()["total"] == 1
+    assert client.get("/api/plugins/hermes-imagegen/history").json()["total"] == 1
+    assert client.post("/api/plugins/hermes-imagegen/history/nope/favorite", json={"value": True}).status_code == 404
+
+
 def test_inline_route_returns_data_url(client, monkeypatch):
     _add_channel(client)
     monkeypatch.setattr(image_engine, "generate", _fake_generate())

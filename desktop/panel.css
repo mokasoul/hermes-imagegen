@@ -272,10 +272,10 @@ width: 100%;
   min-height: 0;
   overflow: hidden;
 }
-.ig-root .panel, .ig-root .panel *, .ig-root .panel *::before, .ig-root .panel *::after{
+.ig-root.panel, .ig-root .panel, .ig-root .panel *, .ig-root .panel *::before, .ig-root .panel *::after{
 box-sizing: border-box;
 }
-.ig-root .panel{
+.ig-root.panel, .ig-root .panel{
 position: relative;
   display: flex;
   flex-direction: column;

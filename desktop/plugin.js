@@ -706,11 +706,32 @@ function StudioView() {
   }
 
   return jsx('div', {
-    className: 'flex h-full min-h-0',
+    className: 'ig-root panel',
     children: [
-      jsxs('div', {
-        className: 'flex w-[336px] shrink-0 flex-col gap-2.5 overflow-y-auto border-r border-(--ui-stroke-secondary) p-3',
+      jsxs('header', {
+        className: 'panelHeader',
         children: [
+          jsx('span', {
+            className: 'panelHeading',
+            children: jsx('h2', { className: 'panelTitle', children: '生图' })
+          }),
+          jsx('span', {
+            className: 'panelHeaderActions',
+            children: jsx('span', {
+              className: 'connectionStatus',
+              'data-connected': 'true',
+              children: [jsx('span', { className: 'connectionDot' }), '就绪']
+            })
+          })
+        ]
+      }),
+      jsx('div', {
+        className: 'studio',
+        children: [
+          jsx('div', { className: 'generation', children: jsx(ResultPanel, {}) }),
+          jsxs('div', {
+        className: 'config',
+        children: [jsxs('div', { className: 'configScroll', children: [
           jsx(SegmentedControl, {
             onChange: mode => patchDraft({ mode }),
             options: MODES,
@@ -897,9 +918,10 @@ function StudioView() {
             ]
           }),
           error ? jsx('div', { className: 'text-[0.6875rem] break-words text-(--ui-danger)', children: error }) : null
-        ]
+        ] })]
       }),
-      jsx('div', { className: 'min-w-0 flex-1 overflow-y-auto p-4', children: jsx(ResultPanel, {}) })
+        ]
+      })
     ]
   })
 }

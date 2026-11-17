@@ -1,0 +1,156 @@
+#!/usr/bin/env python3
+"""Generate the plugin's stylesheet from the upstream DSH panel CSS.
+
+The upstream panel ships as a CSS module (``panel.module.css``) using the DSH
+design tokens (``--dsw-alias-*``). We cannot import a CSS module from a desktop
+plugin (one plain ESM file, loaded uncompiled), so the stylesheet is generated
+once at build/dev time and served by the plugin's own backend:
+
+* every selector is scoped under ``.ig-root`` so the file cannot leak into the
+  app's own chrome (the upstream file has generic names like ``.panel``/``.row``);
+* every ``--dsw-alias-*`` token is mapped to the matching Hermes app token with
+  the DSH value kept as a fallback, so the panel follows the app's theme;
+* ``@keyframes`` are renamed with an ``ig-`` prefix and their references
+  rewritten, for the same collision reason.
+
+Run: ``python scripts/build_panel_css.py`` (writes ``desktop/panel.css``).
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+UPSTREAM = ROOT.parent / "upstream" / "dsh-imagegen" / "src" / "client" / "panel.module.css"
+OUT = ROOT / "desktop" / "panel.css"
+
+# DSH alias -> Hermes app tokens (first entry wins, the rest are fallbacks).
+TOKENS = {
+    "brand-primary": "--ui-accent",
+    "label-primary": "--ui-text-primary",
+    "label-secondary": "--ui-text-secondary",
+    "label-tertiary": "--ui-text-tertiary",
+    "label-quaternary": "--ui-text-quaternary",
+    "label-dimmed": "--ui-text-quaternary",
+    "label-error": "--ui-red",
+    "status-danger": "--ui-red",
+    "state-error": "--ui-red",
+    "bg-base": "--ui-bg-primary",
+    "bg-layer-1": "--ui-bg-secondary",
+    "bg-layer-2": "--ui-bg-tertiary",
+    "bg-layer-3": "--ui-bg-quaternary",
+    "bg-mask-1": "--ui-bg-quaternary",
+    "border-l1": "--ui-stroke-secondary",
+    "border-l2": "--ui-stroke-primary",
+    "interactive-bg-hover": "--ui-row-hover-background",
+    "state-success-primary": "--ui-green",
+    "state-warn-primary": "--ui-orange",
+    "state-business-primary": "--ui-blue",
+}
+
+RULE_START = re.compile(r"^([^{}/][^{}]*?)\{")
+
+
+def map_tokens(text: str) -> str:
+    def repl(match: re.Match[str]) -> str:
+        alias = match.group(1)
+        fallback = match.group(2) or ""
+        ours = TOKENS.get(alias)
+        if ours is None:
+            return f"var(--ig-{alias}{fallback})"
+        return f"var({ours}{fallback})"
+
+    # Handles both var(--dsw-alias-x) and var(--dsw-alias-x, fallback).
+    return re.sub(r"var\(--dsw-alias-([a-z0-9-]+)(\s*,[^;]*?)?\)", repl, text)
+
+
+def scope_selector(selector: str) -> str:
+    part = selector.strip()
+    if not part:
+        return part
+    if part.startswith(":root") or part.startswith("html") or part.startswith("body"):
+        return ".ig-root"
+    if part.startswith(".ig-root"):
+        return part
+    return f".ig-root {part}"
+
+
+def transform(css: str) -> str:
+    out: list[str] = []
+    depth = 0
+    media_stack: list[str] = []
+    keyframes: set[str] = set()
+    buffer: list[str] = []
+
+    i = 0
+    length = len(css)
+    while i < length:
+        char = css[i]
+        if char == "{":
+            head = "".join(buffer).strip()
+            buffer = []
+            head = re.sub(r"/\*.*?\*/", "", head, flags=re.S).strip()
+            if head.startswith("@keyframes") or head.startswith("@-webkit-keyframes"):
+                name = head.split()[-1].strip()
+                keyframes.add(name)
+                out.append(f"{head.replace(name, 'ig-' + name)}{{")
+                depth += 1
+                media_stack = []
+                i += 1
+                continue
+            if head.startswith("@"):
+                out.append(f"{head}{{")
+                depth += 1
+                media_stack.append(head)
+                i += 1
+                continue
+            scoped = ", ".join(scope_selector(part) for part in head.split(","))
+            out.append(f"{scoped}{{\n")
+            depth += 1
+            media_stack = []
+            i += 1
+            continue
+        if char == "}":
+            # flush a declaration-only tail
+            tail = "".join(buffer).strip()
+            buffer = []
+            if tail:
+                out.append(tail + "\n")
+            out.append("}\n")
+            depth = max(0, depth - 1)
+            if depth == 0:
+                media_stack = []
+            i += 1
+            continue
+        buffer.append(char)
+        i += 1
+
+    text = "".join(out)
+    if keyframes:
+        names = "|".join(re.escape(name) for name in sorted(keyframes, key=len, reverse=True))
+        text = re.sub(
+            r"(animation(?:-name)?\s*:\s*)([^;{}]+)",
+            lambda m: m.group(1)
+            + re.sub(rf"(?<![\w-])({names})(?![\w-])", lambda k: "ig-" + k.group(1), m.group(2)),
+            text,
+        )
+    return text
+
+
+def main() -> None:
+    source = UPSTREAM.read_text(encoding="utf-8")
+    body = transform(source)
+    body = map_tokens(body)
+    header = (
+        "/* GENERATED by scripts/build_panel_css.py from the upstream DSH panel\n"
+        " * stylesheet (dickpy/dsh-imagegen, Apache-2.0). Do not edit by hand:\n"
+        " * re-run the script after changing the upstream file. Every rule is\n"
+        " * scoped under .ig-root and themed with Hermes app tokens. */\n\n"
+    )
+    OUT.write_text(header + body, encoding="utf-8")
+    print(f"wrote {OUT.relative_to(ROOT)} ({len(body.splitlines())} lines)")
+
+
+if __name__ == "__main__":
+    main()

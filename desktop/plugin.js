@@ -1227,9 +1227,44 @@ function formatStamp(seconds) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
 
-const GALLERY_ASPECTS = ['aspect-[4/5]', 'aspect-[4/3]', 'aspect-[3/4]']
+/** Injects the generated panel stylesheet once (upstream DSH panel CSS). */
+let panelCssLoaded = false
 
-function GalleryCard({ record, index, selected, selectMode, onSelect, onEditTags, onLoad, onToggleFavorite }) {
+function ensurePanelCss() {
+  if (panelCssLoaded || typeof document === 'undefined') return
+  if (document.getElementById('hermes-imagegen-panel-css')) {
+    panelCssLoaded = true
+    return
+  }
+  panelCssLoaded = true
+  api
+    .rest('/ui.css')
+    .then(data => {
+      if (!data || !data.css) return
+      const style = document.createElement('style')
+      style.id = 'hermes-imagegen-panel-css'
+      style.textContent = data.css
+      document.head.appendChild(style)
+    })
+    .catch(() => {
+      // The panel still renders with the app's own utility classes; the
+      // generated stylesheet only sharpens the shape. No silent fallback claim.
+      panelCssLoaded = false
+    })
+}
+
+const GALLERY_MODEL_BADGE = model => {
+  const lowered = String(model || '').toLowerCase()
+  if (lowered.startsWith('nanobanana')) return 'N'
+  if (lowered.startsWith('seedream')) return 'S'
+  if (lowered.startsWith('grok')) return 'G'
+  if (lowered.startsWith('qwen')) return 'Q'
+  if (lowered.startsWith('glm')) return 'Z'
+  return 'D'
+}
+
+/** One gallery card — DOM mirrors the upstream `article.galleryCard` tree. */
+function GalleryCard({ record, index, selected, selectMode, onSelect, onEditTags, onLoad, onToggleFavorite, onDelete, onTagClick }) {
   const image = (record.images || [])[0]
   const query = useQuery({
     queryKey: ['hermes-imagegen', 'file', image ? image.id : ''],
@@ -1241,120 +1276,132 @@ function GalleryCard({ record, index, selected, selectMode, onSelect, onEditTags
   })
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
-  const channelInitial = (record.channel_name || record.model || '?').trim().slice(0, 1).toUpperCase()
+  const seconds = typeof record.duration_ms === 'number' && record.duration_ms > 0 ? Math.round(record.duration_ms / 1000) : 0
 
-  return jsxs('div', {
-    className: cn(
-      'relative flex flex-col overflow-hidden rounded-[10px] border bg-(--ui-bg-secondary)',
-      selected ? 'border-(--ui-accent)' : 'border-(--ui-stroke-secondary)'
-    ),
+  return jsxs('article', {
+    className: 'galleryCard',
+    'data-selected': selected ? '' : undefined,
     children: [
-      jsx('button', {
-        className: cn('relative block w-full overflow-hidden bg-(--ui-bg-tertiary)', GALLERY_ASPECTS[index % 3]),
-        onClick: () => (selectMode ? onSelect(record.id) : onLoad(record)),
-        type: 'button',
-        children: image
-          ? query.data
-            ? jsx('img', { alt: record.id, className: 'h-full w-full object-cover', src: query.data.data_url })
-            : jsx('div', { className: 'grid h-full w-full place-items-center text-[0.625rem] text-(--ui-text-quaternary)', children: query.error ? '图片不可用' : '加载中…' })
-          : jsx('div', { className: 'grid h-full w-full place-items-center text-[0.625rem] text-(--ui-text-quaternary)', children: record.status === 'failed' ? '生成失败' : '无图' })
-      }),
-      jsx('div', {
-        className: 'pointer-events-none absolute top-2 left-2 rounded-full bg-black/60 px-2 py-0.5 text-[0.5625rem] text-white backdrop-blur-sm',
-        children: `${(record.images || []).length || 0} 张 · ${record.model || '—'}`
-      }),
       jsx('label', {
-        className: cn(
-          'absolute top-1.5 right-1.5 grid h-6 w-6 cursor-pointer place-items-center rounded-[6px] border border-white/70 bg-black/55',
-          selectMode || selected ? 'opacity-100' : 'opacity-0 focus-within:opacity-100 hover:opacity-100'
-        ),
+        className: 'gallerySelect',
+        title: '选择',
+        children: jsx('input', {
+          checked: selected,
+          onChange: () => onSelect(record.id),
+          type: 'checkbox'
+        })
+      }),
+      jsxs('button', {
+        className: 'galleryImageButton',
+        'data-selecting': selectMode ? '' : undefined,
+        onClick: () => (selectMode ? onSelect(record.id) : onLoad(record)),
+        title: selectMode ? '选择' : '打开',
+        type: 'button',
         children: [
-          jsx('input', {
-            checked: selected,
-            className: 'h-3.5 w-3.5 cursor-pointer',
-            onChange: () => onSelect(record.id),
-            type: 'checkbox'
-          })
+          image
+            ? query.data
+              ? jsx('img', { alt: record.prompt || record.id, className: 'galleryImage', decoding: 'async', loading: 'lazy', src: query.data.data_url })
+              : jsx('div', { className: 'galleryImage', children: null })
+            : null,
+          seconds ? jsx('span', { className: 'generationDuration', children: `耗时 ${Math.floor(seconds / 60)}分${seconds % 60}秒` }) : null,
+          jsx('span', { className: 'galleryBadge', children: record.mode === 'edit' ? '图生图' : '文生图' })
         ]
       }),
       jsxs('div', {
-        className: 'flex items-center gap-1 px-2 pt-1.5',
+        className: 'galleryCardActions',
         children: [
-          jsx(Button, { size: 'xs', variant: 'ghost', onClick: () => onLoad(record), children: '载入参数' }),
-          jsx(Button, {
-            size: 'xs',
-            variant: 'ghost',
-            onClick: () => onToggleFavorite(record),
-            children: record.favorite ? '已收藏' : '收藏'
-          }),
-          jsx('span', { className: 'flex-1' })
-        ]
-      }),
-      jsxs('div', {
-        className: 'flex items-start gap-2 px-2 py-1.5',
-        children: [
-          jsx('div', {
-            className: 'grid h-[22px] w-[22px] shrink-0 place-items-center rounded-full bg-(--ui-accent) text-[0.625rem] font-semibold text-white',
-            children: channelInitial
-          }),
-          jsxs('div', {
-            className: 'flex min-w-0 flex-1 flex-col gap-0.5',
+          jsxs('button', {
+            className: 'galleryCardAction',
+            onClick: event => {
+              event.stopPropagation()
+              onLoad(record)
+            },
+            type: 'button',
             children: [
-              jsx('span', { className: 'truncate text-[0.6875rem] font-medium', children: record.channel_name || record.channel_id || '—' }),
-              jsx('span', { className: 'truncate text-[0.625rem] text-(--ui-text-quaternary)', children: `${formatStamp(record.created_at)} · ${record.prompt || ''}` })
+              jsx('svg', { fill: 'none', height: 13, stroke: 'currentColor', strokeLinecap: 'round', strokeLinejoin: 'round', strokeWidth: 1.5, viewBox: '0 0 16 16', width: 13, children: jsx('path', { d: 'M3 3h10v10H3z M5.5 8h5' }) }),
+              '载入参数'
+            ]
+          }),
+          jsxs('button', {
+            className: 'galleryCardAction',
+            onClick: event => {
+              event.stopPropagation()
+              onToggleFavorite(record)
+            },
+            type: 'button',
+            children: [
+              jsx('svg', { fill: 'none', height: 13, stroke: 'currentColor', strokeLinecap: 'round', strokeLinejoin: 'round', strokeWidth: 1.5, viewBox: '0 0 16 16', width: 13, children: jsx('path', { d: 'M8 13.5 3.2 9a2.9 2.9 0 0 1 4.1-4.1L8 5.6l.7-.7A2.9 2.9 0 0 1 12.8 9Z' }) }),
+              record.favorite ? '已收藏' : '收藏'
             ]
           })
         ]
       }),
       jsxs('div', {
-        className: 'flex flex-wrap items-center gap-1 px-2 pb-2',
+        className: 'galleryCardFooter',
         children: [
-          ...(record.tags || []).map(tag =>
-            jsx('span', {
-              className: 'max-w-[96px] truncate rounded-[4px] bg-(--ui-bg-tertiary) px-1.5 py-0.5 text-[0.5625rem] text-(--ui-accent)',
-              children: tag
-            }, tag)
-          ),
-          editing
-            ? jsxs('div', {
-                className: 'flex w-full items-center gap-1',
+          jsx('span', { className: 'galleryAvatar', children: GALLERY_MODEL_BADGE(record.model) }),
+          jsxs('span', {
+            className: 'galleryCardInfo',
+            children: [
+              jsx('strong', { children: record.prompt || '无提示词' }),
+              jsx('small', { children: `${record.model || '—'} · ${(record.params && record.params.size) || '自动'} · ${formatStamp(record.created_at)}` }),
+              jsxs('span', {
+                className: 'galleryTags',
                 children: [
-                  jsx('input', {
-                    autoFocus: true,
-                    className: 'h-5 min-w-0 flex-1 rounded border border-(--ui-stroke-secondary) bg-transparent px-1 text-[0.625rem]',
-                    onChange: event => setDraft(event.target.value),
-                    onKeyDown: event => {
-                      if (event.key === 'Enter') {
-                        onEditTags(record.id, draft.split(/[,，\s]+/).filter(Boolean))
-                        setEditing(false)
-                      }
-                      if (event.key === 'Escape') setEditing(false)
-                    },
-                    placeholder: '标签，逗号或空格分隔，回车保存',
-                    value: draft
-                  }),
+                  ...(record.tags || []).map(tag =>
+                    jsx('button', { onClick: () => onTagClick(tag), type: 'button', children: tag }, tag)
+                  ),
                   jsx('button', {
-                    className: 'text-[0.5625rem] text-(--ui-accent)',
+                    className: 'galleryTagEdit',
                     onClick: () => {
-                      onEditTags(record.id, draft.split(/[,，\s]+/).filter(Boolean))
-                      setEditing(false)
+                      setDraft((record.tags || []).join(' '))
+                      setEditing(true)
                     },
+                    title: '编辑标签',
                     type: 'button',
-                    children: '保存'
+                    children: '+标签'
                   })
                 ]
               })
-            : jsx('button', {
-                className: 'text-[0.5625rem] text-(--ui-text-quaternary) hover:text-foreground',
+            ]
+          }),
+          jsx('button', {
+            className: 'galleryRemove',
+            onClick: () => onDelete(record),
+            title: '删除',
+            type: 'button',
+            children: '×'
+          })
+        ]
+      }),
+      editing
+        ? jsxs('form', {
+            className: 'galleryTagEditor',
+            onSubmit: event => {
+              event.preventDefault()
+              onEditTags(record.id, draft.split(/[,，\s]+/).filter(Boolean))
+              setEditing(false)
+            },
+            children: [
+              jsx('input', {
+                autoFocus: true,
+                'aria-label': '标签',
+                onChange: event => setDraft(event.target.value),
+                placeholder: '标签，空格或逗号分隔',
+                value: draft
+              }),
+              jsx('button', { type: 'submit', children: '保存' }),
+              jsx('button', {
                 onClick: () => {
-                  setDraft((record.tags || []).join(' '))
-                  setEditing(true)
+                  setEditing(false)
+                  setDraft('')
                 },
                 type: 'button',
-                children: '+ 标签'
+                children: '取消'
               })
-        ]
-      })
+            ]
+          })
+        : null
     ]
   })
 }
@@ -1409,6 +1456,10 @@ function HistoryView() {
     loadTags()
   }, [loadTags])
 
+  useEffect(() => {
+    ensurePanelCss()
+  }, [])
+
   const toggleFavorite = async record => {
     try {
       const response = await api.rest(`/history/${record.id}/favorite`, { method: 'POST', body: { value: !record.favorite } })
@@ -1434,6 +1485,17 @@ function HistoryView() {
 
   const toggleSelect = id =>
     setSelected(current => (current.includes(id) ? current.filter(entry => entry !== id) : [...current, id]))
+
+  const remove = async record => {
+    try {
+      await api.rest(`/history/${record.id}`, { method: 'DELETE' })
+      setItems(current => current.filter(item => item.id !== record.id))
+      setTotal(current => Math.max(0, current - 1))
+      loadTags()
+    } catch (writeError) {
+      host.notify({ kind: 'error', message: `删除失败：${errorText(writeError)}` })
+    }
+  }
 
   const runBatch = async action => {
     if (selected.length === 0) return
@@ -1463,7 +1525,7 @@ function HistoryView() {
   }
 
   return jsxs('div', {
-    className: 'flex h-full min-h-0 flex-col gap-2 p-3',
+    className: 'ig-root flex h-full min-h-0 flex-col gap-2 p-3',
     children: [
       jsxs('div', {
         className: 'flex flex-wrap items-center gap-2',
@@ -1553,14 +1615,16 @@ function HistoryView() {
             className: 'min-h-0 flex-1 overflow-y-auto pr-1',
             children: [
               jsx('div', {
-                className: 'grid grid-cols-[repeat(3,minmax(0,1fr))] gap-4',
-                children: items.map((record, index) =>
+                className: 'galleryMasonry',
+                'data-view': 'masonry',
+                children: items.map(record =>
                   jsx(GalleryCard, {
-                    index,
                     key: record.id,
+                    onDelete: remove,
                     onEditTags: editTags,
                     onLoad: dumpRecordToStudio,
                     onSelect: toggleSelect,
+                    onTagClick: tag => setTagFilter(current => (current === tag ? '' : tag)),
                     onToggleFavorite: toggleFavorite,
                     record,
                     selectMode,

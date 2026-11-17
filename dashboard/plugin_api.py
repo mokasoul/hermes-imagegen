@@ -201,6 +201,22 @@ async def cancel_job(job_id: str) -> dict[str, Any]:
     return {"job": job}
 
 
+# --- static UI assets ----------------------------------------------------
+
+
+@router.get("/ui.css")
+async def ui_css() -> dict[str, Any]:
+    """The generated panel stylesheet (see scripts/build_panel_css.py).
+
+    Served as JSON so the desktop half can inject it with the same transport it
+    uses for everything else — a CSS module cannot be imported by a plugin.
+    """
+    path = Path(__file__).resolve().parent.parent / "desktop" / "panel.css"
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="面板样式尚未生成：跑 scripts/build_panel_css.py")
+    return {"css": path.read_text(encoding="utf-8")}
+
+
 # --- history -------------------------------------------------------------
 
 

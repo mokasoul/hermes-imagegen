@@ -24,6 +24,7 @@ Endpoint map:
 
 from __future__ import annotations
 
+import base64
 import logging
 import re
 import sys
@@ -253,3 +254,26 @@ async def image_file(image_id: str) -> FileResponse:
     if not path.exists():
         raise HTTPException(status_code=410, detail="图片文件已被删除")
     return FileResponse(path, media_type=mime, headers={"cache-control": "private, max-age=31536000, immutable"})
+
+
+@router.get("/files/{image_id}/inline")
+async def image_inline(image_id: str) -> dict[str, Any]:
+    """The image as a data URL.
+
+    The desktop renderer cannot put the gateway credential on an ``<img src>``
+    (native auth rides a header the app's own REST door adds), so the plugin
+    UI fetches bytes through ``ctx.rest`` and renders a data URL. The plugin UI
+    caches these per image id, so this is one read per picture, not per render.
+    """
+    found = _get_store().image_path(image_id)
+    if found is None:
+        raise HTTPException(status_code=404, detail="图片不存在")
+    path, mime = found
+    if not path.exists():
+        raise HTTPException(status_code=410, detail="图片文件已被删除")
+    data = path.read_bytes()
+    return {
+        "id": image_id,
+        "mime": mime,
+        "data_url": f"data:{mime};base64,{base64.b64encode(data).decode()}",
+    }

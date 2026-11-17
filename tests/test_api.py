@@ -159,6 +159,22 @@ def test_lost_job_is_reported_not_404(client):
     assert response.json()["job"]["status"] == "lost"
 
 
+def test_inline_route_returns_data_url(client, monkeypatch):
+    _add_channel(client)
+    monkeypatch.setattr(image_engine, "generate", _fake_generate())
+    channel_id = client.get("/api/plugins/hermes-imagegen/settings").json()["channels"][0]["id"]
+    created = client.post(
+        "/api/plugins/hermes-imagegen/jobs",
+        json={"channel_id": channel_id, "model": "gpt-image-2", "mode": "generate", "prompt": "a cat"},
+    )
+    job = _wait_job(client, created.json()["job"]["id"])
+    image_id = job["images"][0]["id"]
+    inline = client.get(f"/api/plugins/hermes-imagegen/files/{image_id}/inline").json()
+    assert inline["mime"] == "image/png"
+    assert inline["data_url"].startswith("data:image/png;base64,")
+    assert client.get("/api/plugins/hermes-imagegen/files/nope/inline").status_code == 404
+
+
 def test_history_delete_removes_files(client, monkeypatch):
     _add_channel(client)
     monkeypatch.setattr(image_engine, "generate", _fake_generate())

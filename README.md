@@ -20,7 +20,7 @@
 | 按模型族塑形请求体（gpt-image / dall-e / grok / nanobanana / seedream / sensenova / zhipu） | ✅ |
 | 异步任务轮询（`task_id` → `GET /tasks/{id}`，含 ModelScope 头） | ✅ |
 | 历史记录（SQLite）+ 图片落盘 + 服务端取图 | ✅ |
-| 桌面工作台 UI | ⏳ PR2 |
+| 桌面工作台（`/imagegen` 整页 + 侧边栏入口 + ⌘K 命令：提示词、模式、渠道/模型、比例、清晰度、数量、参考图、结果下载/复用、参数记忆） | ✅ |
 | 历史 / 画廊界面 | ⏳ PR3 |
 | 无限画布、海报编辑、电商套图、PPT、提示词反推、模板库、订阅渠道、Chat-Completions、DashScope/MiniMax 原生协议 | ❌ 未移植 |
 

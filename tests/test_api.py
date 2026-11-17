@@ -273,3 +273,54 @@ def test_non_png_mask_is_refused(client):
     )
     assert response.status_code == 400
     assert "遮罩必须为 PNG" in response.text
+
+
+def _run_one_generation(client, monkeypatch, prompt="a cat"):
+    _add_channel(client) if not client.get("/api/plugins/hermes-imagegen/settings").json()["channels"] else None
+
+    async def generate(channel, request, references=None, mask=None, cancel=None, transport=None):
+        return [image_engine.GeneratedImage(data=png_bytes(2, 2), mime="image/png")]
+
+    monkeypatch.setattr(image_engine, "generate", generate)
+    channel_id = client.get("/api/plugins/hermes-imagegen/settings").json()["channels"][0]["id"]
+    created = client.post(
+        "/api/plugins/hermes-imagegen/jobs",
+        json={"channel_id": channel_id, "model": "gpt-image-2", "mode": "generate", "prompt": prompt},
+    )
+    task_id = created.json()["job"]["id"]
+    for _ in range(60):
+        job = client.get(f"/api/plugins/hermes-imagegen/jobs/{task_id}").json()["job"]
+        if job["status"] in ("succeeded", "failed"):
+            return job["generation_id"]
+        time.sleep(0.05)
+    raise AssertionError("job never finished")
+
+
+def test_tags_round_trip_and_tag_index(client, monkeypatch):
+    generation_id = _run_one_generation(client, monkeypatch)
+    response = client.post(f"/api/plugins/hermes-imagegen/history/{generation_id}/tags", json={"tags": ["主图", " 主图 ", "618"]})
+    assert response.status_code == 200, response.text
+    assert response.json()["generation"]["tags"] == ["主图", "618"]
+    assert client.get("/api/plugins/hermes-imagegen/history/tags").json()["tags"] == ["618", "主图"]
+    filtered = client.get("/api/plugins/hermes-imagegen/history", params={"tag": "618"}).json()
+    assert filtered["total"] == 1
+    assert client.get("/api/plugins/hermes-imagegen/history", params={"tag": "不存在"}).json()["total"] == 0
+    assert client.post("/api/plugins/hermes-imagegen/history/missing/tags", json={"tags": []}).status_code == 404
+    assert client.post(f"/api/plugins/hermes-imagegen/history/{generation_id}/tags", json={"tags": "nope"}).status_code == 400
+
+
+def test_batch_favorite_and_delete(client, monkeypatch):
+    first = _run_one_generation(client, monkeypatch, prompt="one")
+    second = _run_one_generation(client, monkeypatch, prompt="two")
+    response = client.post(
+        "/api/plugins/hermes-imagegen/history/batch", json={"ids": [first, second, "ghost"], "action": "favorite"}
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["done"] == [first, second]
+    assert response.json()["missing"] == ["ghost"]
+    assert client.get("/api/plugins/hermes-imagegen/history", params={"favorite": True}).json()["total"] == 2
+    deleted = client.post("/api/plugins/hermes-imagegen/history/batch", json={"ids": [first], "action": "delete"})
+    assert deleted.json()["done"] == [first]
+    assert client.get("/api/plugins/hermes-imagegen/history").json()["total"] == 1
+    assert client.post("/api/plugins/hermes-imagegen/history/batch", json={"ids": [second], "action": "nope"}).status_code == 400
+    assert client.post("/api/plugins/hermes-imagegen/history/batch", json={"ids": [], "action": "delete"}).status_code == 400

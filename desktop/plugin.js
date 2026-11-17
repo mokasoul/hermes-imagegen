@@ -3395,6 +3395,12 @@ function ImageGenPage() {
   const [ready, setReady] = useState(false)
 
   useEffect(() => {
+    // The panel + utility stylesheets belong to the whole page, not to one view:
+    // loading them from a single view left every other page unstyled.
+    ensurePanelCss()
+  }, [])
+
+  useEffect(() => {
     let alive = true
     loadBootstrap().finally(() => {
       if (alive) setReady(true)

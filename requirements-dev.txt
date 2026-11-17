@@ -1,0 +1,6 @@
+# Dev/test dependencies only — the plugin itself runs inside the Hermes gateway
+# process and uses what the gateway already ships (fastapi, httpx, stdlib).
+pytest>=8
+httpx>=0.27
+fastapi>=0.110
+ruff>=0.6

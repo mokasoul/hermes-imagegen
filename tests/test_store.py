@@ -60,3 +60,49 @@ def test_pagination_is_newest_first(tmp_path):
     assert listing["total"] == 3
     assert len(listing["items"]) == 2
     assert listing["items"][0]["id"] == ids[-1]
+
+
+def test_favorite_toggle_and_filter(tmp_path):
+    store = HistoryStore(tmp_path / "history.sqlite3", tmp_path / "files")
+    starred = store.create_generation({"mode": "generate", "model": "m", "prompt": "keep", "params": {}})
+    other = store.create_generation({"mode": "generate", "model": "m", "prompt": "plain", "params": {}})
+    assert store.get(starred)["favorite"] == 0
+    record = store.set_favorite(starred, True)
+    assert record["favorite"] == 1
+    assert store.list(favorite_only=True)["total"] == 1
+    assert store.list(favorite_only=True)["items"][0]["id"] == starred
+    assert store.list()["total"] == 2
+    store.set_favorite(starred, False)
+    assert store.list(favorite_only=True)["total"] == 0
+    assert store.set_favorite("missing", True) is None
+    assert other != starred
+
+
+def test_migration_adds_favorite_column_to_an_old_database(tmp_path):
+    import sqlite3
+
+    db = tmp_path / "history.sqlite3"
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        """
+        CREATE TABLE generations (
+          id TEXT PRIMARY KEY, created_at REAL NOT NULL, status TEXT NOT NULL, mode TEXT NOT NULL,
+          channel_id TEXT, channel_name TEXT, model TEXT, prompt TEXT, params TEXT,
+          duration_ms INTEGER, error TEXT, error_code TEXT
+        );
+        CREATE TABLE images (
+          id TEXT PRIMARY KEY, generation_id TEXT NOT NULL, position INTEGER NOT NULL, path TEXT NOT NULL,
+          mime TEXT NOT NULL, width INTEGER, height INTEGER, size_bytes INTEGER, revised_prompt TEXT
+        );
+        INSERT INTO generations (id, created_at, status, mode, model, prompt, params)
+          VALUES ('legacy', 1700000000, 'succeeded', 'generate', 'm', 'old row', '{}');
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    store = HistoryStore(db, tmp_path / "files")
+    listing = store.list()
+    assert listing["total"] == 1
+    assert listing["items"][0]["favorite"] == 0
+    assert store.set_favorite("legacy", True)["favorite"] == 1

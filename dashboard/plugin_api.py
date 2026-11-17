@@ -223,8 +223,20 @@ async def cancel_job(job_id: str) -> dict[str, Any]:
 
 
 @router.get("/history")
-async def history(limit: int = Query(30, ge=1, le=200), offset: int = Query(0, ge=0)) -> dict[str, Any]:
-    return _get_store().list(limit=limit, offset=offset)
+async def history(
+    limit: int = Query(30, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    favorite: bool = Query(False),
+) -> dict[str, Any]:
+    return _get_store().list(limit=limit, offset=offset, favorite_only=favorite)
+
+
+@router.post("/history/{generation_id}/favorite")
+async def favorite_history_item(generation_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    record = _get_store().set_favorite(generation_id, bool(body.get("value", True)))
+    if record is None:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    return {"generation": record}
 
 
 @router.get("/history/{generation_id}")

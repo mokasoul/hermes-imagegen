@@ -181,19 +181,10 @@ def _api_key(channel: Mapping[str, Any]) -> str:
     return key
 
 
-def _check_family_support(channel: Mapping[str, Any], model: str) -> None:
-    """Refuse families/protocols this port cannot shape yet — never guess."""
-    if models.resolve_channel_protocol(channel) == "chat-completions":
-        raise ImageGenError(
-            "该渠道解析为 Chat Completions 协议，本移植版暂未支持；请改用 Images API 地址",
-            "protocol-unsupported",
-        )
-    family = models.model_family(model)
-    if channel.get("api_url_full") is not True:
-        if family == "qwen":
-            raise ImageGenError("Qwen-Image 的 DashScope 原生协议暂未移植，请改用其 OpenAI 兼容端点", "family-unsupported")
-        if family == "minimax":
-            raise ImageGenError("MiniMax 原生图像协议暂未移植", "family-unsupported")
+def _check_channel_ready(channel: Mapping[str, Any]) -> None:
+    """Refuse channels we cannot address at all — never guess a URL shape."""
+    if not str(channel.get("api_url") or "").strip():
+        raise ImageGenError("渠道未配置 API 地址", "config-missing")
 
 
 def _image_items(value: Any, depth: int = 0) -> list[dict[str, Any]]:
@@ -464,6 +455,360 @@ async def _request_one(
     return [await _normalize_item(client, item, base_url, api_key) for item in items]
 
 
+# --- Chat Completions helpers (ported from the upstream engine) -----------
+
+_THINK_BLOCK = re.compile(r"<think>[\s\S]*?</think>", re.I)
+_THINK_OPEN = re.compile(r"<think>", re.I)
+_MARKDOWN_IMAGE = re.compile(r"!\[[^\]]*\]\((?:<)?(https?://[^)\s>]+|data:image/[^)\s>]+)(?:>)?\)", re.I)
+_HTML_IMAGE = re.compile(r"<img\b[^>]*\bsrc\s*=\s*[\"']([^\"']+)[\"'][^>]*>", re.I)
+_BARE_URL = re.compile(r"(?:https?://|data:image/)[^\s\"'<>)\]}]+", re.I)
+_IMAGE_URL_SIGNAL = re.compile(
+    r"(?:image|img|photo|picture|cdn|blob|cloudinary|googleusercontent|oaidalle|replicate|fal\.media|files\.oai)"
+)
+
+
+def _strip_chat_reasoning(value: str) -> str:
+    """Drop `<think>…</think>` blocks — a gateway's reasoning must not be scanned for URLs."""
+    without_closed = _THINK_BLOCK.sub("", value)
+    dangling = _THINK_OPEN.search(without_closed)
+    return (without_closed[: dangling.start()] if dangling else without_closed).strip()
+
+
+def _is_likely_image_url(value: str) -> bool:
+    if re.match(r"^data:image/[a-z0-9.+-]+;base64,", value, re.I):
+        return True
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        return False
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        return False
+    if mime_from_extension(parts.path) is not None:
+        return True
+    signal = f"{parts.hostname or ''}{parts.path}{parts.query}".lower()
+    return _IMAGE_URL_SIGNAL.search(signal) is not None
+
+
+def _parse_embedded_json(value: str) -> Any:
+    """A complete or fenced JSON value embedded in chat text."""
+    cleaned = re.sub(r"^```(?:json)?", "", _strip_chat_reasoning(value), flags=re.I)
+    cleaned = re.sub(r"```$", "", cleaned).strip()
+    if not cleaned:
+        return None
+    attempts = [cleaned]
+    start, end = cleaned.find("{"), cleaned.rfind("}")
+    if start >= 0 and end > start:
+        attempts.append(cleaned[start : end + 1])
+    start, end = cleaned.find("["), cleaned.rfind("]")
+    if start >= 0 and end > start:
+        attempts.append(cleaned[start : end + 1])
+    for attempt in attempts:
+        try:
+            parsed = json.loads(attempt)
+        except ValueError:
+            continue
+        if isinstance(parsed, (dict, list)):
+            return parsed
+    return None
+
+
+def _collect_chat_image_items(value: Any, out: list[dict[str, Any]], seen: set[int], depth: int = 0) -> None:
+    if depth > 6 or value is None:
+        return
+    if isinstance(value, str):
+        text = _strip_chat_reasoning(value)
+        parsed = _parse_embedded_json(text)
+        if parsed is not None:
+            _collect_chat_image_items(parsed, out, seen, depth + 1)
+        for match in _MARKDOWN_IMAGE.finditer(text):
+            out.append({"url": match.group(1)})
+        for match in _HTML_IMAGE.finditer(text):
+            out.append({"url": match.group(1)})
+        for raw in _BARE_URL.findall(text):
+            url = raw.rstrip(".,;:!?")
+            if _is_likely_image_url(url):
+                out.append({"url": url})
+        return
+    if isinstance(value, list):
+        for item in value:
+            _collect_chat_image_items(item, out, seen, depth + 1)
+        return
+    if not isinstance(value, dict):
+        return
+    marker = id(value)
+    if marker in seen:
+        return
+    seen.add(marker)
+    if isinstance(value.get("b64_json"), str) and value["b64_json"].strip():
+        out.append({"b64_json": value["b64_json"]})
+    for key in ("url", "image_url", "image", "output_url"):
+        item = value.get(key)
+        if isinstance(item, str) and item:
+            if key != "url" or _is_likely_image_url(item):
+                out.append({"url": item})
+        elif isinstance(item, dict):
+            nested = item.get("url")
+            if key != "url" and isinstance(nested, str) and nested:
+                out.append({"url": nested})
+            else:
+                _collect_chat_image_items(item, out, seen, depth + 1)
+    for key in ("images", "content", "message", "data", "output", "result"):
+        if key in value:
+            _collect_chat_image_items(value[key], out, seen, depth + 1)
+
+
+def _chat_image_items_of(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Every image candidate in one Chat Completions response, deduplicated."""
+    out: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    for record in _data_records_of(payload):
+        _collect_chat_image_items(record, out, seen)
+    choices = payload.get("choices")
+    if isinstance(choices, list):
+        for choice in choices:
+            if not isinstance(choice, dict):
+                continue
+            _collect_chat_image_items(choice.get("message"), out, seen)
+            _collect_chat_image_items(choice.get("delta"), out, seen)
+    if not out:
+        _collect_chat_image_items(payload.get("images"), out, seen)
+    unique: dict[str, dict[str, Any]] = {}
+    for item in out:
+        raw_url = item.get("url")
+        raw_b64 = item.get("b64_json")
+        url = raw_url.strip() if isinstance(raw_url, str) else ""
+        b64 = raw_b64.strip() if isinstance(raw_b64, str) else ""
+        key = f"url:{url}" if url else (f"b64:{b64[:128]}" if b64 else "")
+        if key and key not in unique:
+            unique[key] = item
+    return list(unique.values())
+
+
+def _data_records_of(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
+    data = payload.get("data")
+    if isinstance(data, list):
+        return [entry for entry in data if isinstance(entry, dict)]
+    if isinstance(data, dict):
+        return [data]
+    for key in ("images", "output"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return [entry for entry in value if isinstance(entry, dict)]
+    return []
+
+
+def _chat_error_text_of(payload: Mapping[str, Any]) -> str:
+    """User-visible text from a Chat response, used only when no image was found."""
+    choices = payload.get("choices")
+    first = choices[0] if isinstance(choices, list) and choices else None
+    content = first.get("message", {}).get("content") if isinstance(first, dict) else None
+    pieces: list[str] = []
+    if isinstance(content, str):
+        pieces.append(_strip_chat_reasoning(content))
+    elif isinstance(content, list):
+        for part in content:
+            if isinstance(part, str):
+                pieces.append(_strip_chat_reasoning(part))
+            elif isinstance(part, dict) and isinstance(part.get("text"), str):
+                pieces.append(_strip_chat_reasoning(part["text"]))
+    text = "\n".join(piece for piece in pieces if piece).strip()
+    if text:
+        return text
+    message = payload.get("message")
+    if isinstance(message, str) and message.strip():
+        return message.strip()
+    error = payload.get("error")
+    if isinstance(error, dict) and isinstance(error.get("message"), str):
+        return error["message"].strip()
+    return ""
+
+
+async def _post_json(
+    client: httpx.AsyncClient,
+    url: str,
+    api_key: str,
+    body: Mapping[str, Any],
+    extra_headers: Mapping[str, str] | None = None,
+) -> tuple[int, Any, str]:
+    """POST JSON with the shared error mapping; returns (status, payload, raw text)."""
+    headers = {"authorization": f"Bearer {api_key}", "content-type": "application/json", "accept": "application/json"}
+    headers.update(extra_headers or {})
+    try:
+        response = await client.post(url, headers=headers, json=dict(body))
+    except httpx.TimeoutException as error:
+        raise ImageGenError("上游接口响应超时（240 秒）", "upstream-timeout") from error
+    except httpx.HTTPError as error:
+        raise ImageGenError(f"无法连接上游接口：{error} · 请求地址 {display_url(url)}", "upstream-unreachable") from error
+    text = response.text
+    try:
+        payload = json.loads(text) if text.strip() else None
+    except ValueError as error:
+        raise ImageGenError(f"上游接口返回了非 JSON 响应（HTTP {response.status_code}）", "upstream-invalid") from error
+    return response.status_code, payload, text
+
+
+def _data_url_of(reference: ReferenceImage) -> str:
+    return f"data:{reference.mime};base64,{base64.b64encode(reference.data).decode()}"
+
+
+async def _generate_qwen(
+    client: httpx.AsyncClient,
+    channel: Mapping[str, Any],
+    base_url: str,
+    api_key: str,
+    request: Mapping[str, Any],
+    references: list[ReferenceImage],
+) -> list[GeneratedImage]:
+    """DashScope native multimodal-generation: chat-style input, `宽*高` sizes."""
+    model = models.wire_model(request)
+    content: list[dict[str, Any]] = []
+    if str(request.get("mode") or "generate") == "edit":
+        if not references:
+            raise ImageGenError("图生图需要上传参考图片", "edit-image-missing")
+        content.append({"image": _data_url_of(references[0])})
+    content.append({"text": str(request.get("prompt") or "")})
+
+    batchable = models.is_versioned_qwen_image(model)
+    count = models.clamp_count(request.get("n", 1)) if batchable else 1
+    parameters: dict[str, Any] = {}
+    size = models.qwen_size(model, str(request.get("size") or ""))
+    if size is not None:
+        parameters["size"] = size
+    if count > 1:
+        parameters["n"] = count
+    body = {"model": model, "input": {"messages": [{"role": "user", "content": content}]}, "parameters": parameters}
+
+    url = f"{base_url}/services/aigc/multimodal-generation/generation"
+    status, payload, _ = await _post_json(client, url, api_key, body)
+    if status >= 400 or not isinstance(payload, dict):
+        raise ImageGenError(
+            f"{_error_message(payload, status)}（HTTP {status} · {display_url(url)}）", "upstream-rejected"
+        )
+    urls: list[str] = []
+    output = payload.get("output")
+    choices = output.get("choices") if isinstance(output, dict) else None
+    for choice in choices or []:
+        message = choice.get("message") if isinstance(choice, dict) else None
+        items = message.get("content") if isinstance(message, dict) else None
+        for item in items or []:
+            if isinstance(item, dict) and isinstance(item.get("image"), str) and item["image"]:
+                urls.append(item["image"])
+    if not urls:
+        raise ImageGenError("上游响应缺少图片内容", "upstream-empty")
+    return [await _normalize_item(client, {"url": url}, base_url, api_key) for url in urls]
+
+
+async def _generate_minimax(
+    client: httpx.AsyncClient,
+    channel: Mapping[str, Any],
+    base_url: str,
+    api_key: str,
+    request: Mapping[str, Any],
+    references: list[ReferenceImage],
+) -> list[GeneratedImage]:
+    """MiniMax native `/image_generation`: base64 answers, `base_resp` is the verdict."""
+    model = models.wire_model(request)
+    prompt = str(request.get("prompt") or "")
+    limit = models.prompt_char_limit(model)
+    if limit is not None and len(prompt) >= limit:
+        raise ImageGenError(
+            f"MiniMax image-01 要求提示词少于 {limit} 字符（当前 {len(prompt)}），请精简后重试", "prompt-too-long"
+        )
+    body: dict[str, Any] = {"model": model, "prompt": prompt, "response_format": "base64"}
+    ratio = str(request.get("size") or "").strip()
+    if ratio and ratio != "auto":
+        if ratio not in models.MINIMAX_RATIOS:
+            allowed = " / ".join(sorted(models.MINIMAX_RATIOS))
+            raise ImageGenError(f"MiniMax image-01 不支持 {ratio} 宽高比，可选：{allowed}", "size-unsupported")
+        body["aspect_ratio"] = ratio
+    count = min(models.MINIMAX_MAX_N, models.clamp_count(request.get("n", 1)))
+    if count > 1:
+        body["n"] = count
+    if str(request.get("mode") or "generate") == "edit":
+        if not references:
+            raise ImageGenError("图生图需要上传参考图片", "edit-image-missing")
+        # image-01 takes exactly one character reference per request.
+        body["subject_reference"] = [{"type": "character", "image_file": _data_url_of(references[0])}]
+
+    url = f"{base_url}/image_generation"
+    status, payload, _ = await _post_json(client, url, api_key, body)
+    if not isinstance(payload, dict):
+        raise ImageGenError(
+            f"{_error_message(payload, status)}（HTTP {status} · {display_url(url)}）", "upstream-rejected"
+        )
+    base_resp = payload.get("base_resp")
+    if isinstance(base_resp, dict):
+        code = base_resp.get("status_code")
+        if isinstance(code, int) and code != 0:
+            message = base_resp.get("status_msg") or "unknown error"
+            raise ImageGenError(
+                f"MiniMax 拒绝请求（{code}）：{message}",
+                "upstream-unauthorized" if code in (1004, 2049) else "upstream-rejected",
+            )
+    if status >= 400:
+        raise ImageGenError(
+            f"{_error_message(payload, status)}（HTTP {status} · {display_url(url)}）", "upstream-rejected"
+        )
+
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    raw_b64 = [item for item in (data.get("image_base64") or []) if isinstance(item, str) and item.strip()]
+    raw_urls = [item for item in (data.get("image_urls") or []) if isinstance(item, str) and item]
+    if not raw_b64 and not raw_urls:
+        raise ImageGenError("上游响应缺少图片内容", "upstream-empty")
+
+    images: list[GeneratedImage] = []
+    for raw in raw_b64:
+        encoded = raw.strip()
+        if encoded.startswith("data:"):
+            encoded = encoded.split(",", 1)[-1]
+        try:
+            block = base64.b64decode(encoded, validate=False)
+        except (binascii.Error, ValueError) as error:
+            raise ImageGenError("MiniMax 返回的 base64 图片无法解码", "upstream-invalid") from error
+        images.append(GeneratedImage(data=block, mime=sniff_image_mime(block) or "image/jpeg"))
+    for raw in raw_urls:
+        images.append(await _normalize_item(client, {"url": raw}, base_url, api_key))
+    return images
+
+
+def _chat_endpoint(channel: Mapping[str, Any], base_url: str) -> str:
+    if models.is_chat_completions_url(base_url) or channel.get("api_url_full") is True:
+        return base_url
+    return f"{base_url}/chat/completions"
+
+
+async def _generate_chat(
+    client: httpx.AsyncClient,
+    channel: Mapping[str, Any],
+    base_url: str,
+    api_key: str,
+    request: Mapping[str, Any],
+    references: list[ReferenceImage],
+) -> list[GeneratedImage]:
+    """One Chat Completions image request; the count is satisfied by parallel calls."""
+    prompt = str(request.get("prompt") or "")
+    if str(request.get("mode") or "generate") == "edit":
+        if not references:
+            raise ImageGenError("图生图需要上传参考图片", "edit-image-missing")
+        content: Any = [{"type": "text", "text": prompt}] + [
+            {"type": "image_url", "image_url": {"url": _data_url_of(reference)}} for reference in references[:5]
+        ]
+    else:
+        content = prompt
+    url = _chat_endpoint(channel, base_url)
+    body = {"model": models.wire_model(request), "messages": [{"role": "user", "content": content}], "stream": False}
+    status, payload, _ = await _post_json(client, url, api_key, body)
+    if status >= 400 or not isinstance(payload, dict):
+        raise ImageGenError(
+            f"{_error_message(payload, status)}（HTTP {status} · {display_url(url)}）", "upstream-rejected"
+        )
+    items = _chat_image_items_of(payload)
+    if not items:
+        detail = _chat_error_text_of(payload)[:1200] or "Chat Completions 响应中没有可用的图片结果"
+        raise ImageGenError(detail, "upstream-empty")
+    return [await _normalize_item(client, item, base_url, api_key) for item in items]
+
+
 async def generate(
     channel: Mapping[str, Any],
     request: Mapping[str, Any],
@@ -472,10 +817,10 @@ async def generate(
     cancel: asyncio.Event | None = None,
     transport: httpx.AsyncBaseTransport | None = None,
 ) -> list[GeneratedImage]:
-    """Run one generation request (fanning out for ``n`` images)."""
+    """Run one generation request through the protocol + family the channel implies."""
     refs = list(references or [])
     model = models.wire_model(request)
-    _check_family_support(channel, model)
+    _check_channel_ready(channel)
     prompt = str(request.get("prompt") or "").strip()
     if not prompt:
         raise ImageGenError("提示词不能为空", "prompt-missing")
@@ -486,7 +831,10 @@ async def generate(
         if len(ref.data) > MAX_EDIT_IMAGE_BYTES:
             raise ImageGenError("参考图片超过 10MB 上限", "edit-image-too-large")
 
-    params = models.effective_params(request, channel)
+    base_url = normalize_base_url(channel)
+    api_key = _api_key(channel)
+    protocol = models.resolve_channel_protocol(channel)
+    family = models.model_family(model)
     count = models.effective_count(request)
 
     async with httpx.AsyncClient(
@@ -495,12 +843,33 @@ async def generate(
         transport=transport,
     ) as client:
 
-        async def one() -> list[GeneratedImage]:
+        def guard() -> None:
             if cancel is not None and cancel.is_set():
                 raise ImageGenError("任务已取消", "cancelled")
-            return await _request_one(client, channel, request, params, refs, mask)
 
-        results = await asyncio.gather(*(one() for _ in range(count)))
+        if protocol == "chat-completions":
+            # Chat has no batch parameter: one call per image.
+            async def chat_one() -> list[GeneratedImage]:
+                guard()
+                return await _generate_chat(client, channel, base_url, api_key, request, refs)
+
+            results = await asyncio.gather(*(chat_one() for _ in range(count)))
+        elif family == "qwen" and not is_model_scope(base_url):
+            # ModelScope serves Qwen through the OpenAI shape, so only the
+            # native DashScope host takes this branch (as upstream does).
+            guard()
+            results = [await _generate_qwen(client, channel, base_url, api_key, request, refs)]
+        elif family == "minimax":
+            guard()
+            results = [await _generate_minimax(client, channel, base_url, api_key, request, refs)]
+        else:
+            params = models.effective_params(request, channel)
+
+            async def images_one() -> list[GeneratedImage]:
+                guard()
+                return await _request_one(client, channel, request, params, refs, mask)
+
+            results = await asyncio.gather(*(images_one() for _ in range(count)))
     return [image for batch in results for image in batch]
 
 

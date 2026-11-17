@@ -18,14 +18,14 @@
 | 文生图 `images/generations` | ✅ |
 | 图生图 `images/edits`（多参考图 + PNG 遮罩尺寸校验） | ✅ |
 | 按模型族塑形请求体（gpt-image / dall-e / grok / nanobanana / seedream / sensenova / zhipu） | ✅ |
+| 三种非 OpenAI 协议：Chat Completions（含 markdown/HTML/裸链/base64 图片抽取与 `<think>` 剥离）、DashScope 原生 Qwen（`宽*高`、版本化批量）、MiniMax 原生 `/image_generation`（`base_resp` 判定、`subject_reference` 图生图） | ✅ |
 | 异步任务轮询（`task_id` → `GET /tasks/{id}`，含 ModelScope 头） | ✅ |
 | 历史记录（SQLite）+ 图片落盘 + 服务端取图 | ✅ |
 | 桌面工作台（`/imagegen` 整页 + 侧边栏入口 + ⌘K 命令：提示词、模式、渠道/模型、比例、清晰度、数量、参考图、结果下载/复用、参数记忆） | ✅ |
 | 历史 / 画廊（分页浏览、收藏筛选、载入参数、单图下载、删除记录与文件） | ✅ |
-| 无限画布、海报编辑、电商套图、PPT、提示词反推、模板库、订阅渠道、Chat-Completions、DashScope/MiniMax 原生协议 | ❌ 未移植 |
+| 无限画布、海报文字/Logo 编辑、电商套图、图片转可编辑 PPT、提示词反推、模板库、订阅渠道 | ⏳ 进行中 |
 
-未移植的能力**不会静默降级**：相关请求直接返回稳定错误码
-（`protocol-unsupported` / `family-unsupported`），界面照原文展示。
+后端对每条渠道自动判定协议（`api_url` 以 `/chat/completions` 结尾 → Chat；DashScope 官方域上的 qwen-image → 原生 Qwen；`image-*` → MiniMax 原生；其余走 OpenAI Images 与各模型族塑形），也可在渠道设置里手动指定。判定不出的地址不会被猜着打。
 
 ## 安装
 

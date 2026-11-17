@@ -25,9 +25,11 @@ Hermes Desktop plugin platform.
   Hermes Desktop plugin.
 - The generation queue: an in-process asyncio job registry plus a SQLite
   history store, instead of the DSH host's task queue.
-- **Not ported in this version:** the infinite canvas, poster editor, e-commerce
-  set generator, PNG-to-editable-PPT pipeline, prompt reverse-engineering,
-  subscription channels, the agent's own skill runtime, and the i18n bundles.
+- **Not ported, by decision:** the PNG-to-editable-PPT pipeline (the owner
+  does not want pptx output), subscription channels (vendor OAuth logins —
+  the mechanism is worthless without the third-party accounts), and the
+  upstream canvas extras: sketch boards, vision layer splitting, brush masks,
+  annotation edits, file nodes and canvas skills.
 
 ## Bundled prompt-template snapshots
 

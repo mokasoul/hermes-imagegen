@@ -3426,7 +3426,9 @@ function ImageGenPage() {
               : jsx(StudioView, {})
 
   return jsxs('div', {
-    className: 'flex h-full min-h-0 flex-col',
+    // `ig-root` scopes the injected stylesheets; keeping it on the page root
+    // means every view is styled even if a view forgets its own wrapper.
+    className: 'ig-root flex h-full min-h-0 flex-col',
     children: [
       jsxs('div', {
         className: 'flex items-center gap-2 border-b border-(--ui-stroke-secondary) px-3 py-1.5',

@@ -1429,11 +1429,572 @@ function TemplatesView() {
   })
 }
 
+// ── canvas ─────────────────────────────────────────────────────────────────
+
+const CANVAS_NODE_DEFAULTS = {
+  text: { width: 260, height: 140, title: '提示词' },
+  config: { width: 260, height: 220, title: '生成配置' },
+  image: { width: 260, height: 260, title: '图片' }
+}
+
+function CanvasNodeFrame({ node, scale, selected, onSelect, onDragStart, children }) {
+  return jsxs('div', {
+    className: cn(
+      'absolute flex flex-col overflow-hidden rounded-[6px] border bg-(--ui-bg-secondary) shadow-sm',
+      selected ? 'border-(--ui-accent)' : 'border-(--ui-stroke-secondary)'
+    ),
+    style: {
+      left: node.x * scale,
+      top: node.y * scale,
+      width: node.width * scale,
+      height: node.height * scale
+    },
+    onPointerDown: event => {
+      onSelect(node.id)
+      event.stopPropagation()
+    },
+    children: [
+      jsx('div', {
+        className: 'flex h-5 shrink-0 cursor-move items-center justify-between gap-1 border-b border-(--ui-stroke-secondary) px-1.5 text-[0.625rem] text-(--ui-text-tertiary)',
+        onPointerDown: event => {
+          event.stopPropagation()
+          onDragStart(event, node)
+        },
+        children: [
+          jsx('span', { className: 'truncate', children: node.title || node.type }),
+          jsx('span', { children: node.type })
+        ]
+      }),
+      jsx('div', { className: 'flex min-h-0 flex-1 flex-col gap-1 p-1.5', children })
+    ]
+  })
+}
+
+function CanvasImageView({ asset, scale }) {
+  const query = useQuery({
+    queryKey: ['hermes-imagegen', 'canvas-asset', asset && asset.id],
+    queryFn: () => api.rest(`/canvas/assets/${asset.id}/inline`),
+    enabled: Boolean(asset && asset.id),
+    staleTime: Infinity
+  })
+  if (!asset || !asset.id) return jsx('div', { className: 'grid flex-1 place-items-center text-[0.625rem] text-(--ui-text-quaternary)', children: '空图片' })
+  if (query.isPending) return jsx('div', { className: 'flex-1 animate-pulse rounded bg-(--ui-bg-tertiary)' })
+  if (query.error) return jsx('div', { className: 'grid flex-1 place-items-center text-[0.625rem] text-(--ui-danger)', children: '素材读取失败' })
+  return jsx('img', { alt: asset.name || '', className: 'min-h-0 w-full flex-1 rounded object-contain', src: query.data?.data_url || '' })
+}
+
+function CanvasView() {
+  const settings = useValue($settings)
+  const [pages, setPages] = useState([])
+  const [page, setPage] = useState(null)
+  const [selected, setSelected] = useState('')
+  const [busy, setBusy] = useState('')
+  const [note, setNote] = useState('')
+  const [error, setError] = useState('')
+  const dirtyRef = useRef(false)
+  const revisionRef = useRef(0)
+  const dragRef = useRef(null)
+  const panRef = useRef(null)
+  const viewportRef = useRef(null)
+
+  const loadPages = useCallback(async () => {
+    try {
+      const data = await api.rest('/canvas/pages')
+      setPages(data.pages || [])
+    } catch (readError) {
+      setError(errorText(readError))
+    }
+  }, [])
+
+  useEffect(() => {
+    loadPages()
+  }, [loadPages])
+
+  const openPage = useCallback(async pageId => {
+    try {
+      const data = await api.rest(`/canvas/pages/${pageId}`)
+      setPage(data.page)
+      revisionRef.current = data.page.revision
+      setSelected('')
+      setError('')
+    } catch (readError) {
+      setError(errorText(readError))
+    }
+  }, [])
+
+  const save = useCallback(async silent => {
+    if (!page) return null
+    try {
+      const data = await api.rest(`/canvas/pages/${page.id}`, {
+        method: 'PUT',
+        body: { document: page, revision: revisionRef.current }
+      })
+      revisionRef.current = data.page.revision
+      setPage(current => (current ? { ...current, revision: data.page.revision } : current))
+      dirtyRef.current = false
+      if (!silent) setNote(`已保存 r${data.page.revision}`)
+      return data.page
+    } catch (saveError) {
+      setError(errorText(saveError))
+      return null
+    }
+  }, [page])
+
+  useEffect(() => {
+    if (!page || !dirtyRef.current) return undefined
+    const timer = setTimeout(() => {
+      save(true)
+    }, 900)
+    return () => clearTimeout(timer)
+  }, [page, save])
+
+  const update = mutator => {
+    setPage(current => {
+      if (!current) return current
+      const next = mutator({ ...current, nodes: [...current.nodes], connections: [...current.connections] })
+      dirtyRef.current = true
+      return next
+    })
+  }
+
+  const createPage = async () => {
+    setBusy('create')
+    try {
+      const data = await api.rest('/canvas/pages', { method: 'POST', body: { title: '未命名画布' } })
+      await loadPages()
+      setPage(data.page)
+      revisionRef.current = data.page.revision
+    } catch (writeError) {
+      setError(errorText(writeError))
+    } finally {
+      setBusy('')
+    }
+  }
+
+  const removePage = async pageId => {
+    try {
+      await api.rest(`/canvas/pages/${pageId}`, { method: 'DELETE' })
+      if (page && page.id === pageId) setPage(null)
+      await loadPages()
+    } catch (writeError) {
+      setError(errorText(writeError))
+    }
+  }
+
+  const addNode = type => {
+    const defaults = CANVAS_NODE_DEFAULTS[type]
+    const id = `n_${Math.random().toString(36).slice(2, 10)}`
+    const meta =
+      type === 'text'
+        ? { text: '' }
+        : type === 'config'
+          ? { mode: 'image', channelId: '', model: '', size: '1:1', quality: '2k', count: 1 }
+          : { asset: { id: '', mime: 'image/png', name: '' }, status: 'idle' }
+    const maxX = (page?.nodes || []).reduce((value, node) => Math.max(value, node.x + node.width), 0)
+    update(current => {
+      current.nodes.push({
+        id,
+        type,
+        title: defaults.title,
+        x: maxX + 40,
+        y: 40 + Math.floor(Math.random() * 60),
+        width: defaults.width,
+        height: defaults.height,
+        metadata: meta
+      })
+      return current
+    })
+    setSelected(id)
+  }
+
+  const patchNode = (nodeId, metaPatch) => {
+    update(current => {
+      const node = current.nodes.find(entry => entry.id === nodeId)
+      if (node) node.metadata = { ...(node.metadata || {}), ...metaPatch }
+      return current
+    })
+  }
+
+  const toggleInput = (configId, sourceId) => {
+    update(current => {
+      const existing = current.connections.find(edge => edge.fromNodeId === sourceId && edge.toNodeId === configId)
+      current.connections = existing
+        ? current.connections.filter(edge => edge !== existing)
+        : [...current.connections, { id: `e_${sourceId}_${configId}`, fromNodeId: sourceId, toNodeId: configId }]
+      return current
+    })
+  }
+
+  const uploadImageNode = async nodeId => {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.accept = 'image/*'
+    input.onchange = async () => {
+      const file = input.files && input.files[0]
+      if (!file) return
+      setBusy('upload')
+      try {
+        const dataUrl = await new Promise((resolve, reject) => {
+          const reader = new FileReader()
+          reader.onload = () => resolve(String(reader.result || ''))
+          reader.onerror = () => reject(new Error('读取文件失败'))
+          reader.readAsDataURL(file)
+        })
+        const data = await api.rest('/canvas/assets', { method: 'POST', body: { data_url: dataUrl, name: file.name } })
+        patchNode(nodeId, { asset: data.asset, status: 'success' })
+      } catch (uploadError) {
+        setError(errorText(uploadError))
+      } finally {
+        setBusy('')
+      }
+    }
+    input.click()
+  }
+
+  const generateFrom = async configId => {
+    const config = page.nodes.find(node => node.id === configId)
+    if (!config) return
+    const meta = config.metadata || {}
+    const incoming = page.connections.filter(edge => edge.toNodeId === configId).map(edge => edge.fromNodeId)
+    const textNodes = page.nodes.filter(node => incoming.includes(node.id) && node.type === 'text')
+    const imageNodes = page.nodes.filter(node => incoming.includes(node.id) && node.type === 'image' && node.metadata?.asset?.id)
+    const prompt = textNodes
+      .map(node => (node.metadata?.text || '').trim())
+      .filter(Boolean)
+      .join('\n\n')
+    if (!prompt) {
+      setError('这个配置没有连到任何有文字的提示词节点')
+      return
+    }
+    setBusy(configId)
+    setError('')
+    try {
+      const references = []
+      for (const node of imageNodes.slice(0, 5)) {
+        const asset = await api.rest(`/canvas/assets/${node.metadata.asset.id}/inline`)
+        references.push(asset.data_url)
+      }
+      const submitted = await api.rest('/jobs', {
+        method: 'POST',
+        body: {
+          channel_id: meta.channelId || '',
+          model: meta.model || '',
+          mode: references.length ? 'edit' : 'generate',
+          prompt,
+          size: meta.size || '1:1',
+          quality: meta.quality || 'auto',
+          detail: '',
+          n: meta.count || 1,
+          references
+        }
+      })
+      const taskId = submitted.job.id
+      patchNode(configId, { status: 'generating', taskId })
+      let finalJob = null
+      for (let tick = 0; tick < 180; tick += 1) {
+        await new Promise(resolve => setTimeout(resolve, 1500))
+        const polled = await api.rest(`/jobs/${taskId}`)
+        finalJob = polled.job
+        if (['succeeded', 'failed', 'cancelled', 'lost'].includes(finalJob.status)) break
+      }
+      if (!finalJob || finalJob.status !== 'succeeded') {
+        patchNode(configId, { status: 'error', error: (finalJob && (finalJob.error || finalJob.status)) || '超时' })
+        setError(`生成失败：${(finalJob && finalJob.error) || '未知原因'}`)
+        return
+      }
+      patchNode(configId, { status: 'success', error: '' })
+      const baseX = config.x + config.width + 60
+      const baseY = config.y
+      for (let index = 0; index < (finalJob.images || []).length; index += 1) {
+        const image = finalJob.images[index]
+        const inline = await api.rest(`/files/${image.id}/inline`)
+        const asset = await api.rest('/canvas/assets', { method: 'POST', body: { data_url: inline.data_url, name: `${image.id}.png` } })
+        const nodeId = `n_${Math.random().toString(36).slice(2, 10)}`
+        update(current => {
+          current.nodes.push({
+            id: nodeId,
+            type: 'image',
+            title: `${meta.model || '生成'} #${index + 1}`,
+            x: baseX,
+            y: baseY + index * 300,
+            width: 260,
+            height: 260,
+            metadata: { asset: asset.asset, status: 'success' }
+          })
+          current.connections.push({ id: `e_${configId}_${nodeId}`, fromNodeId: configId, toNodeId: nodeId })
+          return current
+        })
+      }
+      haptic('success')
+    } catch (runError) {
+      setError(errorText(runError))
+      patchNode(configId, { status: 'error', error: errorText(runError) })
+    } finally {
+      setBusy('')
+    }
+  }
+
+  // pointer plumbing ------------------------------------------------------
+
+  useEffect(() => {
+    const move = event => {
+      if (dragRef.current) {
+        const { nodeId, startX, startY, originX, originY, scale } = dragRef.current
+        const dx = (event.clientX - startX) / scale
+        const dy = (event.clientY - startY) / scale
+        update(current => {
+          const node = current.nodes.find(entry => entry.id === nodeId)
+          if (node) {
+            node.x = Math.round(originX + dx)
+            node.y = Math.round(originY + dy)
+          }
+          return current
+        })
+      } else if (panRef.current) {
+        const { startX, startY, originX, originY } = panRef.current
+        const dx = event.clientX - startX
+        const dy = event.clientY - startY
+        update(current => {
+          current.viewport = { ...current.viewport, x: originX + dx, y: originY + dy }
+          return current
+        })
+      }
+    }
+    const up = () => {
+      dragRef.current = null
+      panRef.current = null
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+    return () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+    }
+  }, [])
+
+  if (!page) {
+    return jsxs('div', {
+      className: 'flex h-full min-h-0 flex-col gap-2 p-3',
+      children: [
+        jsxs('div', {
+          className: 'flex items-center gap-2',
+          children: [
+            jsx(Button, { size: 'xs', onClick: createPage, disabled: busy === 'create', children: '新建画布' }),
+            jsx('span', { className: 'flex-1' }),
+            jsx(Button, { size: 'xs', variant: 'ghost', onClick: loadPages, children: '刷新' })
+          ]
+        }),
+        error ? jsx('div', { className: 'text-[0.6875rem] text-(--ui-danger)', children: error }) : null,
+        pages.length === 0
+          ? jsx(EmptyState, { className: 'flex-1', title: '还没有画布', description: '新建一个：把提示词、生成配置和结果连成一条可迭代的流程。' })
+          : jsx('div', {
+              className: 'flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto',
+              children: pages.map(entry =>
+                jsxs('div', {
+                  className: 'flex items-center gap-2 rounded border border-(--ui-stroke-secondary) px-2 py-1.5 text-xs',
+                  children: [
+                    jsx('button', {
+                      className: 'truncate text-left font-medium hover:underline',
+                      onClick: () => openPage(entry.id),
+                      type: 'button',
+                      children: entry.title
+                    }),
+                    jsx('span', { className: 'text-[0.625rem] text-(--ui-text-quaternary)', children: `${entry.nodeCount} 个节点 · r${entry.revision} · ${formatStamp(entry.updatedAt)}` }),
+                    jsx('span', { className: 'flex-1' }),
+                    jsx(Button, { size: 'xs', variant: 'ghost', onClick: () => openPage(entry.id), children: '打开' }),
+                    jsx(Button, { size: 'xs', variant: 'ghost', onClick: () => removePage(entry.id), children: '删除' })
+                  ]
+                }, entry.id)
+              )
+            })
+      ]
+    })
+  }
+
+  const scale = (page.viewport && page.viewport.k) || 1
+  const offsetX = (page.viewport && page.viewport.x) || 0
+  const offsetY = (page.viewport && page.viewport.y) || 0
+  const textNodes = page.nodes.filter(node => node.type === 'text')
+  const imageNodes = page.nodes.filter(node => node.type === 'image')
+  const nodeById = new Map(page.nodes.map(node => [node.id, node]))
+
+  return jsxs('div', {
+    className: 'flex h-full min-h-0 flex-col',
+    children: [
+      jsxs('div', {
+        className: 'flex flex-wrap items-center gap-1 border-b border-(--ui-stroke-secondary) px-2 py-1',
+        children: [
+          jsx(Button, { size: 'xs', variant: 'ghost', onClick: () => setPage(null), children: '← 列表' }),
+          jsx(Input, {
+            className: 'h-7 w-[180px] text-xs',
+            value: page.title,
+            onChange: event => update(current => ({ ...current, title: event.target.value }))
+          }),
+          jsx(Button, { size: 'xs', variant: 'ghost', onClick: () => addNode('text'), children: '+ 提示词' }),
+          jsx(Button, { size: 'xs', variant: 'ghost', onClick: () => addNode('config'), children: '+ 配置' }),
+          jsx(Button, { size: 'xs', variant: 'ghost', onClick: () => addNode('image'), children: '+ 图片' }),
+          jsx(Button, { size: 'xs', variant: 'ghost', onClick: () => save(false), children: '保存' }),
+          jsx('span', { className: 'text-[0.625rem] text-(--ui-text-quaternary)', children: note || `r${page.revision} · ${Math.round(scale * 100)}%` }),
+          jsx('span', { className: 'flex-1' }),
+          error ? jsx('span', { className: 'max-w-[280px] truncate text-[0.625rem] text-(--ui-danger)', children: error }) : null
+        ]
+      }),
+      jsxs('div', {
+        ref: viewportRef,
+        className: 'relative min-h-0 flex-1 overflow-hidden bg-(--ui-bg-primary)',
+        onPointerDown: event => {
+          panRef.current = { startX: event.clientX, startY: event.clientY, originX: offsetX, originY: offsetY }
+          setSelected('')
+        },
+        onWheel: event => {
+          event.preventDefault()
+          const next = Math.min(3, Math.max(0.2, scale * (event.deltaY > 0 ? 0.92 : 1.08)))
+          update(current => ({ ...current, viewport: { ...current.viewport, k: Number(next.toFixed(3)) } }))
+        },
+        style: {
+          backgroundImage: 'radial-gradient(circle, rgba(127,127,127,0.25) 1px, transparent 1px)',
+          backgroundSize: `${24 * scale}px ${24 * scale}px`,
+          backgroundPosition: `${offsetX}px ${offsetY}px`
+        },
+        children: [
+          jsx('svg', {
+            className: 'pointer-events-none absolute inset-0 h-full w-full',
+            children: page.connections.map(edge => {
+              const from = nodeById.get(edge.fromNodeId)
+              const to = nodeById.get(edge.toNodeId)
+              if (!from || !to) return null
+              const x1 = (from.x + from.width) * scale + offsetX
+              const y1 = (from.y + from.height / 2) * scale + offsetY
+              const x2 = to.x * scale + offsetX
+              const y2 = (to.y + to.height / 2) * scale + offsetY
+              const mid = (x1 + x2) / 2
+              return jsx('path', {
+                d: `M ${x1} ${y1} C ${mid} ${y1}, ${mid} ${y2}, ${x2} ${y2}`,
+                fill: 'none',
+                stroke: 'var(--ui-stroke-secondary)',
+                strokeWidth: 1.5
+              }, edge.id)
+            })
+          }),
+          jsx('div', {
+            className: 'absolute',
+            style: { left: offsetX, top: offsetY },
+            children: page.nodes.map(node =>
+              jsx('div', {
+                className: 'absolute',
+                style: { left: node.x * scale, top: node.y * scale, width: node.width * scale, height: node.height * scale },
+                children: jsx(CanvasNodeFrame, {
+                  node,
+                  scale,
+                  selected: selected === node.id,
+                  onSelect: setSelected,
+                  onDragStart: event => {
+                    dragRef.current = { nodeId: node.id, startX: event.clientX, startY: event.clientY, originX: node.x, originY: node.y, scale }
+                  },
+                  children:
+                    node.type === 'text'
+                      ? jsx(Textarea, {
+                          className: 'h-full w-full resize-none text-[0.6875rem]',
+                          placeholder: '写提示词…',
+                          value: node.metadata?.text || '',
+                          onChange: event => patchNode(node.id, { text: event.target.value })
+                        })
+                      : node.type === 'image'
+                        ? jsxs('div', {
+                            className: 'flex min-h-0 flex-1 flex-col gap-1',
+                            children: [
+                              jsx(CanvasImageView, { asset: node.metadata?.asset, scale }),
+                              jsx('div', {
+                                className: 'flex items-center justify-between text-[0.625rem] text-(--ui-text-quaternary)',
+                                children: [
+                                  jsx('span', { children: node.metadata?.asset?.name || '' }),
+                                  jsx('button', {
+                                    className: 'hover:text-foreground',
+                                    onClick: () => uploadImageNode(node.id),
+                                    type: 'button',
+                                    children: '替换'
+                                  })
+                                ]
+                              })
+                            ]
+                          })
+                        : jsxs('div', {
+                            className: 'flex min-h-0 flex-1 flex-col gap-1 text-[0.625rem]',
+                            children: [
+                              jsx(Select, {
+                                value: node.metadata?.channelId || (settings?.default_channel_id || ''),
+                                onValueChange: value => patchNode(node.id, { channelId: value, model: '' }),
+                                children: [
+                                  jsx(SelectTrigger, { className: 'h-6 text-[0.625rem]', children: jsx(SelectValue, { placeholder: '渠道' }) }),
+                                  jsx(SelectContent, {
+                                    children: (settings?.channels || []).map(entry =>
+                                      jsx(SelectItem, { value: entry.id, children: entry.name }, entry.id)
+                                    )
+                                  })
+                                ]
+                              }),
+                              jsx(Input, {
+                                className: 'h-6 text-[0.625rem]',
+                                placeholder: '模型',
+                                value: node.metadata?.model || '',
+                                onChange: event => patchNode(node.id, { model: event.target.value })
+                              }),
+                              jsxs('div', {
+                                className: 'flex gap-1',
+                                children: [
+                                  jsx(Input, { className: 'h-6 text-[0.625rem]', value: node.metadata?.size || '', onChange: event => patchNode(node.id, { size: event.target.value }) }),
+                                  jsx(Input, { className: 'h-6 text-[0.625rem]', value: node.metadata?.quality || '', onChange: event => patchNode(node.id, { quality: event.target.value }) })
+                                ]
+                              }),
+                              jsx('div', {
+                                className: 'min-h-0 flex-1 overflow-y-auto',
+                                children: [...textNodes, ...imageNodes].map(source =>
+                                  jsxs('label', {
+                                    className: 'flex items-center gap-1',
+                                    children: [
+                                      jsx('input', {
+                                        type: 'checkbox',
+                                        checked: page.connections.some(edge => edge.fromNodeId === source.id && edge.toNodeId === node.id),
+                                        onChange: () => toggleInput(node.id, source.id)
+                                      }),
+                                      jsx('span', { className: 'truncate', children: `${source.type === 'text' ? '文字' : '图片'}：${source.title || source.id}` })
+                                    ]
+                                  }, source.id)
+                                )
+                              }),
+                              jsxs('div', {
+                                className: 'flex items-center gap-1',
+                                children: [
+                                  jsx(Button, {
+                                    size: 'xs',
+                                    disabled: Boolean(busy),
+                                    onClick: () => generateFrom(node.id),
+                                    children: busy === node.id ? '生成中…' : '生成'
+                                  }),
+                                  jsx('span', {
+                                    className: 'truncate text-(--ui-text-quaternary)',
+                                    children: node.metadata?.status === 'error' ? `失败：${node.metadata?.error || ''}` : node.metadata?.status || ''
+                                  })
+                                ]
+                              })
+                            ]
+                          })
+                })
+              }, node.id)
+            )
+          })
+        ]
+      })
+    ]
+  })
+}
+
 // ── page ───────────────────────────────────────────────────────────────────
 
 const VIEWS = [
   { id: 'studio', label: '工作室' },
   { id: 'templates', label: '模板' },
+  { id: 'canvas', label: '画布' },
   { id: 'history', label: '历史' },
   { id: 'channels', label: '渠道' }
 ]
@@ -1458,9 +2019,11 @@ function ImageGenPage() {
       ? jsx(ChannelsView, {})
       : view === 'templates'
         ? jsx(TemplatesView, {})
-        : view === 'history'
-          ? jsx(HistoryView, {})
-          : jsx(StudioView, {})
+        : view === 'canvas'
+          ? jsx(CanvasView, {})
+          : view === 'history'
+            ? jsx(HistoryView, {})
+            : jsx(StudioView, {})
 
   return jsxs('div', {
     className: 'flex h-full min-h-0 flex-col',

@@ -22,7 +22,7 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-UPSTREAM = ROOT.parent / "upstream" / "dsh-imagegen" / "src" / "client" / "panel.module.css"
+UPSTREAM = ROOT / "design" / "panel.module.css"
 OUT = ROOT / "desktop" / "panel.css"
 
 # DSH alias -> Hermes app tokens (first entry wins, the rest are fallbacks).

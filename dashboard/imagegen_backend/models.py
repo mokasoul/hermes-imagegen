@@ -280,10 +280,15 @@ def openai_size_for(model: str, ratio: str, quality: str) -> str | None:
     return _LEGACY_OPENAI_SIZE_BY_RATIO.get(ratio)
 
 
+def is_versioned_qwen_image(model: str) -> bool:
+    """Versioned ids (qwen-image-2.0 / -3.0-pro / …) take the large size set."""
+    return re.match(r"^qwen-image-\d+\.\d", (model or "").strip(), re.I) is not None
+
+
 def qwen_size(model: str, ratio: str) -> str | None:
     if ratio in ("", "auto"):
         return None
-    table = _QWEN_SIZE_HD if re.match(r"^qwen-image-\d+\.\d", (model or "").strip(), re.I) else _QWEN_SIZE_CLASSIC
+    table = _QWEN_SIZE_HD if is_versioned_qwen_image(model) else _QWEN_SIZE_CLASSIC
     return table.get(ratio)
 
 

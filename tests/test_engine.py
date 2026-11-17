@@ -103,11 +103,18 @@ def test_missing_config_and_prompt_fail_fast():
     assert caught.value.code == "prompt-missing"
 
 
-def test_chat_completions_protocol_is_refused_not_guessed():
+def test_chat_completions_channel_routes_through_the_chat_dialect():
+    """A chat-URL channel is served by the ported Chat Completions path now."""
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        return httpx.Response(200, json={"choices": [{"message": {"content": f"![x](data:image/png;base64,{base64.b64encode(png_bytes()).decode()})"}}]})
+
     channel = _channel(api_url="https://api.example.com/v1/chat/completions")
-    with pytest.raises(engine.ImageGenError) as caught:
-        _run(engine.generate(channel, _request()))
-    assert caught.value.code == "protocol-unsupported"
+    images = _run(engine.generate(channel, _request(), transport=httpx.MockTransport(handler)))
+    assert seen["url"] == "https://api.example.com/v1/chat/completions"
+    assert images[0].mime == "image/png"
 
 
 def test_edit_upload_is_multipart_with_reference_and_mask():

@@ -39,6 +39,16 @@ jobs:
           assert rules and all(line.startswith(".ig-root") for line in rules), "unscoped selector in panel.css"
           print(f"panel.css ok: {len(rules)} scoped rules")
           PY
+      - name: Utility stylesheet covers every class plugin.js uses
+        run: |
+          python scripts/build_plugin_ui_css.py
+          git diff --exit-code desktop/plugin-ui.css
+          python - <<'PY'
+          import pathlib
+          text = pathlib.Path("desktop/plugin-ui.css").read_text()
+          assert text.count("{") == text.count("}"), "unbalanced braces in plugin-ui.css"
+          print(f"plugin-ui.css ok: {text.count('{')} rules")
+          PY
       - name: Manifest sanity
         run: |
           python - <<'PY'

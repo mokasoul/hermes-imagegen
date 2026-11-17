@@ -1,5 +1,5 @@
 name: hermes-imagegen
-version: 0.12.2
+version: 0.13.0
 description: "AI image generation workbench for Hermes Desktop: text-to-image and image-to-image through OpenAI-compatible channels (gpt-image / nanobanana / seedream / grok / GLM), with server-side keys, detector-assisted model discovery, and a shared generation history."
 author: "Xin Li (@mokasoul) — port of dickpy/dsh-imagegen (Apache-2.0)"
 kind: standalone

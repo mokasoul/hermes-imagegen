@@ -206,15 +206,28 @@ async def cancel_job(job_id: str) -> dict[str, Any]:
 
 @router.get("/ui.css")
 async def ui_css() -> dict[str, Any]:
-    """The generated panel stylesheet (see scripts/build_panel_css.py).
+    """The plugin's stylesheets, concatenated in cascade order.
 
-    Served as JSON so the desktop half can inject it with the same transport it
-    uses for everything else — a CSS module cannot be imported by a plugin.
+    Two generated files: ``panel.css`` ports the upstream DSH panel stylesheet
+    (every rule scoped under ``.ig-root``, themed with the app's ``--ui-*``
+    tokens) and ``plugin-ui.css`` renders the utility vocabulary this plugin's
+    own views use — a plugin's class strings never reach the app's Tailwind
+    build, so without it those names are dead strings.
+
+    Served as JSON so the desktop half can inject it through the same transport
+    it uses for everything else (a CSS module cannot be imported by a plugin).
     """
-    path = Path(__file__).resolve().parent.parent / "desktop" / "panel.css"
-    if not path.is_file():
-        raise HTTPException(status_code=404, detail="面板样式尚未生成：跑 scripts/build_panel_css.py")
-    return {"css": path.read_text(encoding="utf-8")}
+    base = Path(__file__).resolve().parent.parent / "desktop"
+    parts: list[str] = []
+    for name in ("panel.css", "plugin-ui.css"):
+        path = base / name
+        if not path.is_file():
+            raise HTTPException(
+                status_code=404,
+                detail=f"{name} 尚未生成：跑 scripts/build_panel_css.py 与 scripts/build_plugin_ui_css.py",
+            )
+        parts.append(path.read_text(encoding="utf-8"))
+    return {"css": "\n".join(parts)}
 
 
 # --- history -------------------------------------------------------------

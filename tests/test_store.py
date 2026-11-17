@@ -1,6 +1,20 @@
 from __future__ import annotations
 
+import pytest
+
 from imagegen_backend.store import HistoryStore
+
+
+@pytest.fixture()
+def store(tmp_path):
+    return HistoryStore(tmp_path / "history.sqlite3", tmp_path / "files")
+
+
+def _record(store, prompt="x"):
+    """Create a finished generation and return its id."""
+    gid = store.create_generation({"mode": "generate", "model": "m", "prompt": prompt, "params": {}})
+    store.finish_generation(gid, status="succeeded", duration_ms=10, images=[(b"%PNGDATA%", "image/png", None)])
+    return gid
 
 
 def test_history_roundtrip(tmp_path):
@@ -66,9 +80,9 @@ def test_favorite_toggle_and_filter(tmp_path):
     store = HistoryStore(tmp_path / "history.sqlite3", tmp_path / "files")
     starred = store.create_generation({"mode": "generate", "model": "m", "prompt": "keep", "params": {}})
     other = store.create_generation({"mode": "generate", "model": "m", "prompt": "plain", "params": {}})
-    assert store.get(starred)["favorite"] == 0
+    assert store.get(starred)["favorite"] is False
     record = store.set_favorite(starred, True)
-    assert record["favorite"] == 1
+    assert record["favorite"] is True
     assert store.list(favorite_only=True)["total"] == 1
     assert store.list(favorite_only=True)["items"][0]["id"] == starred
     assert store.list()["total"] == 2
@@ -104,5 +118,43 @@ def test_migration_adds_favorite_column_to_an_old_database(tmp_path):
     store = HistoryStore(db, tmp_path / "files")
     listing = store.list()
     assert listing["total"] == 1
-    assert listing["items"][0]["favorite"] == 0
-    assert store.set_favorite("legacy", True)["favorite"] == 1
+    assert listing["items"][0]["favorite"] is False
+    assert listing["items"][0]["tags"] == []
+    assert store.set_favorite("legacy", True)["favorite"] is True
+    assert store.set_tags("legacy", ["主图", " 熨斗 ", "主图", ""])["tags"] == ["主图", "熨斗"]
+
+
+def test_tags_round_trip_and_filter(store):
+    first = _record(store, prompt="one")
+    second = _record(store, prompt="two")
+    assert store.set_tags(first, ["猫咪", "头像"])["tags"] == ["猫咪", "头像"]
+    assert store.set_tags(second, ["猫咪"])["tags"] == ["猫咪"]
+    assert store.set_tags(first, [])["tags"] == []
+    # the cleared row must drop out of the tag filter
+    assert [item["id"] for item in store.list(tag="猫咪")["items"]] == [second]
+    assert store.list(tag="头像")["total"] == 0
+    assert store.tags() == ["猫咪"]
+    assert store.set_tags("nope", ["x"]) is None
+
+
+def test_tags_are_capped_and_trimmed(store):
+    record_id = _record(store, prompt="many")
+    tags = [f"t{index}" for index in range(12)] + ["x" * 40]
+    stored = store.set_tags(record_id, tags)["tags"]
+    assert stored == [f"t{index}" for index in range(8)]
+    long_tag = store.set_tags(record_id, ["y" * 40])["tags"][0]
+    assert len(long_tag) == 24
+
+
+def test_bulk_actions_report_missing_ids(store):
+    first = _record(store, prompt="a")
+    second = _record(store, prompt="b")
+    result = store.bulk([first, second, "ghost"], "favorite")
+    assert result["done"] == [first, second]
+    assert result["missing"] == ["ghost"]
+    assert store.get(first)["favorite"] is True
+    result = store.bulk([first], "delete")
+    assert result["done"] == [first]
+    assert store.get(first) is None
+    with pytest.raises(ValueError):
+        store.bulk([second], "explode")

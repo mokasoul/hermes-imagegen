@@ -23,6 +23,37 @@ from . import paths
 
 _EXT = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif"}
 
+MAX_TAGS = 8
+MAX_TAG_LEN = 24
+
+
+def normalise_tags(tags: Iterable[str]) -> list[str]:
+    """Trim, drop empties, dedupe preserving order, cap count and length."""
+    out: list[str] = []
+    for raw in tags:
+        tag = str(raw).strip()[:MAX_TAG_LEN]
+        if tag and tag not in out:
+            out.append(tag)
+        if len(out) >= MAX_TAGS:
+            break
+    return out
+
+
+def _parse_json_columns(record: dict[str, Any]) -> None:
+    """Turn the TEXT columns back into structures, in place."""
+    try:
+        params = json.loads(record.get("params") or "{}")
+    except json.JSONDecodeError:
+        params = {}
+    record["params"] = params if isinstance(params, dict) else {}
+    try:
+        tags = json.loads(record.get("tags") or "[]")
+    except json.JSONDecodeError:
+        tags = []
+    record["tags"] = [str(tag) for tag in tags] if isinstance(tags, list) else []
+    record["favorite"] = bool(record.get("favorite"))
+
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS generations (
   id TEXT PRIMARY KEY,
@@ -37,7 +68,8 @@ CREATE TABLE IF NOT EXISTS generations (
   duration_ms INTEGER,
   error TEXT,
   error_code TEXT,
-  favorite INTEGER NOT NULL DEFAULT 0
+  favorite INTEGER NOT NULL DEFAULT 0,
+  tags TEXT
 );
 CREATE TABLE IF NOT EXISTS images (
   id TEXT PRIMARY KEY,
@@ -80,6 +112,8 @@ class HistoryStore:
             columns = {row["name"] for row in conn.execute("PRAGMA table_info(generations)")}
             if "favorite" not in columns:
                 conn.execute("ALTER TABLE generations ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0")
+            if "tags" not in columns:
+                conn.execute("ALTER TABLE generations ADD COLUMN tags TEXT")
 
     # --- writes ----------------------------------------------------------
 
@@ -170,35 +204,54 @@ class HistoryStore:
                 "SELECT * FROM images WHERE generation_id = ? ORDER BY position", (generation_id,)
             ).fetchall()
         record = dict(row)
-        try:
-            record["params"] = json.loads(record.get("params") or "{}")
-        except json.JSONDecodeError:
-            record["params"] = {}
+        _parse_json_columns(record)
         record["images"] = [self._image_public(dict(image)) for image in images]
         return record
 
-    def list(self, limit: int = 30, offset: int = 0, favorite_only: bool = False) -> dict[str, Any]:
+    def list(
+        self, limit: int = 30, offset: int = 0, favorite_only: bool = False, tag: str = ""
+    ) -> dict[str, Any]:
         limit = max(1, min(200, int(limit)))
         offset = max(0, int(offset))
-        where = " WHERE favorite = 1" if favorite_only else ""
+        clauses: list[str] = []
+        values: list[Any] = []
+        if favorite_only:
+            clauses.append("favorite = 1")
+        if tag.strip():
+            clauses.append("tags LIKE ?")
+            values.append(f'%"{tag.strip()}"%')
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
         with self._connect() as conn:
-            total = conn.execute(f"SELECT COUNT(*) AS n FROM generations{where}").fetchone()["n"]
+            total = conn.execute(f"SELECT COUNT(*) AS n FROM generations{where}", values).fetchone()["n"]
             rows = conn.execute(
-                f"SELECT * FROM generations{where} ORDER BY created_at DESC LIMIT ? OFFSET ?", (limit, offset)
+                f"SELECT * FROM generations{where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                (*values, limit, offset),
             ).fetchall()
             records: list[dict[str, Any]] = []
             for row in rows:
                 record = dict(row)
-                try:
-                    record["params"] = json.loads(record.get("params") or "{}")
-                except json.JSONDecodeError:
-                    record["params"] = {}
+                _parse_json_columns(record)
                 images = conn.execute(
                     "SELECT * FROM images WHERE generation_id = ? ORDER BY position", (record["id"],)
                 ).fetchall()
                 record["images"] = [self._image_public(dict(image)) for image in images]
                 records.append(record)
         return {"items": records, "total": total, "limit": limit, "offset": offset}
+
+    def tags(self) -> list[str]:
+        """Every tag in use, most frequent first — feeds the gallery's filter row."""
+        counts: dict[str, int] = {}
+        with self._connect() as conn:
+            rows = conn.execute("SELECT tags FROM generations WHERE tags IS NOT NULL").fetchall()
+        for row in rows:
+            try:
+                parsed = json.loads(row["tags"] or "[]")
+            except json.JSONDecodeError:
+                continue
+            for tag in parsed if isinstance(parsed, list) else []:
+                key = str(tag)
+                counts[key] = counts.get(key, 0) + 1
+        return [tag for tag, _ in sorted(counts.items(), key=lambda item: (-item[1], item[0]))]
 
     def set_favorite(self, generation_id: str, value: bool) -> dict[str, Any] | None:
         """Star/unstar one generation; returns the record, or None when absent."""
@@ -209,6 +262,33 @@ class HistoryStore:
         if cursor.rowcount == 0:
             return None
         return self.get(generation_id)
+
+    def set_tags(self, generation_id: str, tags: Iterable[str]) -> dict[str, Any] | None:
+        """Replace the tag list; ``[]`` clears it. None when the record is gone."""
+        clean = normalise_tags(tags)
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE generations SET tags = ? WHERE id = ?",
+                (json.dumps(clean, ensure_ascii=False) if clean else None, generation_id),
+            )
+        if cursor.rowcount == 0:
+            return None
+        return self.get(generation_id)
+
+    def bulk(self, ids: Iterable[str], action: str) -> dict[str, Any]:
+        """Apply one action to many generations. Unknown ids are reported, not fatal."""
+        wanted = [str(entry) for entry in ids if str(entry).strip()][:500]
+        done: list[str] = []
+        missing: list[str] = []
+        for generation_id in wanted:
+            if action == "delete":
+                ok = self.delete_generation(generation_id)
+            elif action in ("favorite", "unfavorite"):
+                ok = self.set_favorite(generation_id, action == "favorite") is not None
+            else:
+                raise ValueError(f"未知批量操作：{action}")
+            (done if ok else missing).append(generation_id)
+        return {"action": action, "done": done, "missing": missing}
 
     def image_path(self, image_id: str) -> tuple[Path, str] | None:
         with self._connect() as conn:

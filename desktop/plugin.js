@@ -29,6 +29,7 @@ import {
   Separator,
   Switch,
   Textarea,
+  Tip,
   atom,
   cn,
   haptic,
@@ -71,6 +72,7 @@ const $draft = atom({
   mode: 'generate',
   channelId: '',
   model: '',
+  promptModel: '',
   size: '1:1',
   quality: '2k',
   n: 1,
@@ -454,10 +456,57 @@ function StudioView() {
   const draft = useValue($draft)
   const job = useValue($job)
   const error = useValue($error)
+  const references = useValue($references)
   const running = isRunning(job)
   const channels = (settings && settings.channels) || []
   const channel = activeChannel(settings, draft.channelId)
   const models = (channel && channel.models) || []
+
+  const [promptModels, setPromptModels] = useState([])
+  const [promptBusy, setPromptBusy] = useState('')
+  const [promptError, setPromptError] = useState('')
+
+  useEffect(() => {
+    if (!draft.channelId) {
+      setPromptModels([])
+      return undefined
+    }
+    let alive = true
+    api.rest(`/prompt/models?channel_id=${encodeURIComponent(draft.channelId)}`)
+      .then(data => {
+        if (alive) setPromptModels(data.models || [])
+      })
+      .catch(() => {
+        if (alive) setPromptModels([])
+      })
+    return () => {
+      alive = false
+    }
+  }, [draft.channelId])
+
+  const promptAction = async kind => {
+    if (!draft.channelId) {
+      setPromptError('先选一个渠道')
+      return
+    }
+    setPromptBusy(kind)
+    setPromptError('')
+    try {
+      const body = { channel_id: draft.channelId, model: draft.promptModel || '', prompt: draft.prompt }
+      if (kind === 'reverse') {
+        body.references = references.map(reference => reference.dataUrl)
+        body.output = 'zh'
+        body.detail = 'standard'
+      }
+      const data = await api.rest(`/prompt/${kind}`, { method: 'POST', body, timeoutMs: 130000 })
+      if (data.prompt) patchDraft({ prompt: data.prompt, promptModel: data.model || draft.promptModel })
+      haptic('tap')
+    } catch (actionError) {
+      setPromptError(errorText(actionError))
+    } finally {
+      setPromptBusy('')
+    }
+  }
 
   return jsx('div', {
     className: 'flex h-full min-h-0',
@@ -545,6 +594,55 @@ function StudioView() {
             ]
           }),
           draft.mode === 'edit' ? jsx(ReferenceStrip, {}) : null,
+          jsxs('div', {
+            className: 'flex flex-wrap items-center gap-1',
+            children: [
+              jsx(Select, {
+                value: draft.promptModel || '__auto__',
+                onValueChange: value => patchDraft({ promptModel: value === '__auto__' ? '' : value }),
+                children: [
+                  jsx(SelectTrigger, { className: 'h-7 w-[132px] text-[0.6875rem]', children: jsx(SelectValue, { placeholder: '提示词模型' }) }),
+                  jsx(SelectContent, {
+                    children: [
+                      jsx(SelectItem, { value: '__auto__', children: '自动选文本模型' }),
+                      ...promptModels.map(model => jsx(SelectItem, { value: model, children: model }, model))
+                    ]
+                  })
+                ]
+              }),
+              jsx(Tip, {
+                label: '用渠道里的文本模型把上面的提示词扩写得更具体（温度 0.7）',
+                children: jsx(Button, {
+                  size: 'xs',
+                  variant: 'outline',
+                  disabled: Boolean(promptBusy),
+                  onClick: () => promptAction('enhance'),
+                  children: promptBusy === 'enhance' ? '增强中…' : '增强'
+                })
+              }),
+              jsx(Tip, {
+                label: '保持用途与事实不变，润色措辞、补视觉细节（温度 0.35）',
+                children: jsx(Button, {
+                  size: 'xs',
+                  variant: 'outline',
+                  disabled: Boolean(promptBusy),
+                  onClick: () => promptAction('polish'),
+                  children: promptBusy === 'polish' ? '润色中…' : '润色'
+                })
+              }),
+              jsx(Tip, {
+                label: '读参考图反推一段能复现它的提示词（需要至少一张参考图）',
+                children: jsx(Button, {
+                  size: 'xs',
+                  variant: 'outline',
+                  disabled: Boolean(promptBusy) || references.length === 0,
+                  onClick: () => promptAction('reverse'),
+                  children: promptBusy === 'reverse' ? '反推中…' : '从参考图反推'
+                })
+              })
+            ]
+          }),
+          promptError ? jsx('div', { className: 'text-[0.625rem] break-words text-(--ui-danger)', children: promptError }) : null,
           jsxs('div', {
             className: 'flex flex-col gap-1',
             children: [

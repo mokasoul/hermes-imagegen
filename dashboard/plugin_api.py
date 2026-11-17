@@ -29,7 +29,7 @@ import logging
 import re
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse
@@ -41,7 +41,7 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 from imagegen_backend import engine as image_engine  # noqa: E402
-from imagegen_backend import runtime  # noqa: E402
+from imagegen_backend import prompt_tools, runtime  # noqa: E402
 from imagegen_backend import templates as template_library  # noqa: E402
 from imagegen_backend.jobs import JobError, JobRunner  # noqa: E402
 from imagegen_backend.settings import Settings, SettingsError  # noqa: E402
@@ -268,6 +268,79 @@ async def image_inline(image_id: str) -> dict[str, Any]:
         "mime": mime,
         "data_url": f"data:{mime};base64,{base64.b64encode(data).decode()}",
     }
+
+
+# --- prompt helpers ------------------------------------------------------
+
+
+def _prompt_channel(body: Mapping[str, Any]) -> dict[str, Any]:
+    channel_id = str(body.get("channel_id") or "").strip()
+    channel = _get_settings().channel(channel_id) if channel_id else None
+    if channel is None:
+        raise HTTPException(status_code=400, detail="请先选择一个渠道")
+    return channel
+
+
+@router.get("/prompt/models")
+async def prompt_models(channel_id: str = Query("")) -> dict[str, Any]:
+    channel = _get_settings().channel(channel_id) if channel_id else None
+    if channel is None:
+        raise HTTPException(status_code=400, detail="请先选择一个渠道")
+    try:
+        return {"models": await prompt_tools.list_models(channel), "channel_id": channel["id"]}
+    except image_engine.ImageGenError as error:
+        raise HTTPException(status_code=400, detail={"message": str(error), "code": error.code}) from error
+
+
+@router.post("/prompt/enhance")
+async def prompt_enhance(body: dict[str, Any]) -> dict[str, Any]:
+    channel = _prompt_channel(body)
+    prompt = str(body.get("prompt") or "").strip()
+    if not prompt:
+        raise HTTPException(status_code=400, detail="提示词不能为空")
+    try:
+        model = prompt_tools.chat_model_for(channel, body.get("model"))
+        return {"prompt": await prompt_tools.enhance_prompt(channel, model, prompt), "model": model}
+    except image_engine.ImageGenError as error:
+        raise HTTPException(status_code=400, detail={"message": str(error), "code": error.code}) from error
+
+
+@router.post("/prompt/polish")
+async def prompt_polish(body: dict[str, Any]) -> dict[str, Any]:
+    channel = _prompt_channel(body)
+    prompt = str(body.get("prompt") or "").strip()
+    if not prompt:
+        raise HTTPException(status_code=400, detail="提示词不能为空")
+    try:
+        model = prompt_tools.chat_model_for(channel, body.get("model"))
+        return {"prompt": await prompt_tools.polish_prompt(channel, model, prompt), "model": model}
+    except image_engine.ImageGenError as error:
+        raise HTTPException(status_code=400, detail={"message": str(error), "code": error.code}) from error
+
+
+@router.post("/prompt/reverse")
+async def prompt_reverse(body: dict[str, Any]) -> dict[str, Any]:
+    channel = _prompt_channel(body)
+    raw = [entry for entry in (body.get("references") or []) if isinstance(entry, str) and entry.strip()]
+    if not raw:
+        raise HTTPException(status_code=400, detail="反推至少需要一张图片")
+    try:
+        references = [
+            image_engine.ReferenceImage(data=data, mime=mime)
+            for data, mime in (image_engine.parse_data_url(entry) for entry in raw)
+        ]
+        model = prompt_tools.chat_model_for(channel, body.get("model"))
+        text = await prompt_tools.reverse_prompt(
+            channel,
+            model,
+            references,
+            detail=str(body.get("detail") or "standard"),
+            output=str(body.get("output") or "zh"),
+            instruction=str(body.get("instruction") or ""),
+        )
+        return {"prompt": text, "model": model, "images": len(references)}
+    except image_engine.ImageGenError as error:
+        raise HTTPException(status_code=400, detail={"message": str(error), "code": error.code}) from error
 
 
 # --- prompt-template library --------------------------------------------

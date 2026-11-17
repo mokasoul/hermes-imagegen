@@ -1630,7 +1630,7 @@ function HistoryView() {
               ? '还没有收藏的记录。'
               : tagFilter
                 ? `没有带「${tagFilter}」标签的记录。`
-                : '生成过的图片会按时间出现在这里，可载入参数、打标签、收藏或批量整理。',
+                : '本地图库目录 ~/.hermes/imagegen 里还没有图片记录。去「工作室」生成第一张，或在「对比」「套图」里出图后，都会按时间落到这里，可载入参数、打标签、收藏或批量整理。',
             title: favoriteOnly ? '没有收藏' : '图库还是空的'
           })
         : jsxs('div', {
@@ -3369,7 +3369,7 @@ const VIEWS = [
   { id: 'ecommerce', label: '套图' },
   { id: 'templates', label: '模板' },
   { id: 'canvas', label: '画布' },
-  { id: 'history', label: '历史' },
+  { id: 'history', label: '图库' },
   { id: 'channels', label: '渠道' }
 ]
 

@@ -879,6 +879,7 @@ const EMPTY_FORM = {
   api_key_env: '',
   api_url_full: false,
   protocol: 'auto',
+  default_model: '',
   clear_api_key: false
 }
 
@@ -903,8 +904,36 @@ function ChannelsView() {
       api_key_env: channel.api_key_env || '',
       api_url_full: Boolean(channel.api_url_full),
       protocol: channel.protocol || 'auto',
+      default_model: channel.default_model || '',
       clear_api_key: false
     })
+  }
+
+  /** Save the picked model on the channel and mirror it to the global default. */
+  const pickModel = async modelId => {
+    setForm(current => ({ ...current, default_model: modelId }))
+    if (!form.id) {
+      setStatus(`已选 ${modelId}，保存渠道后生效`)
+      return
+    }
+    setBusy(true)
+    try {
+      const body = { ...form, default_model: modelId }
+      delete body.api_key
+      await api.rest('/settings/channels', { method: 'POST', body })
+      const response = await api.rest('/settings/defaults', {
+        method: 'POST',
+        body: { default_channel_id: form.id, default_model: modelId }
+      })
+      $settings.set(response.settings)
+      patchDraft({ channelId: form.id, model: modelId })
+      setStatus(`默认模型：${modelId}`)
+      haptic('tap')
+    } catch (error) {
+      setStatus(`保存模型失败：${errorText(error)}`)
+    } finally {
+      setBusy(false)
+    }
   }
 
   const save = async () => {
@@ -999,7 +1028,7 @@ function ChannelsView() {
                     jsxs('div', {
                       className: 'flex items-center gap-1 text-[0.625rem] text-(--ui-text-tertiary)',
                       children: [
-                        jsx('span', { children: `${(channel.models || []).length} 个模型` }),
+                        jsx('span', { children: channel.default_model ? channel.default_model : `${(channel.models || []).length} 个模型` }),
                         jsx('span', { className: 'flex-1' }),
                         jsx('button', { className: 'hover:text-foreground', onClick: () => edit(channel), type: 'button', children: '编辑' }),
                         jsx('button', { className: 'hover:text-foreground', onClick: () => makeDefault(channel.id), type: 'button', children: '设为默认' }),
@@ -1118,12 +1147,29 @@ function ChannelsView() {
           }),
           detected.length > 0
             ? jsxs('div', {
-                className: 'mt-4 flex max-w-[560px] flex-wrap gap-1',
+                className: 'mt-4 flex max-w-[560px] flex-col gap-1',
                 children: [
-                  jsx('div', { className: 'w-full text-[0.6875rem] text-(--ui-text-tertiary)', children: '探测到的生图模型' }),
-                  ...detected.map(model =>
-                    jsx(Badge, { children: `${model.id}${model.known ? '' : '（未知协议）'}` }, model.id)
-                  )
+                  jsx('div', { className: 'text-[0.6875rem] text-(--ui-text-tertiary)', children: '探测到的生图模型（点一个设为默认）' }),
+                  jsx('div', {
+                    className: 'flex flex-wrap gap-1',
+                    children: detected.map(model =>
+                      jsx('button', {
+                        className: cn(
+                          'rounded-[4px] border px-1.5 py-0.5 text-[0.6875rem]',
+                          form.default_model === model.id
+                            ? 'border-(--ui-accent) bg-(--ui-bg-tertiary) text-foreground'
+                            : 'border-(--ui-stroke-secondary) text-(--ui-text-tertiary) hover:text-foreground'
+                        ),
+                        disabled: busy,
+                        onClick: () => pickModel(model.id),
+                        type: 'button',
+                        children: `${form.default_model === model.id ? '✓ ' : ''}${model.id}${model.known ? '' : '（未知协议）'}`
+                      }, model.id)
+                    )
+                  }),
+                  form.default_model
+                    ? jsx('div', { className: 'text-[0.625rem] text-(--ui-text-quaternary)', children: `当前默认模型：${form.default_model}` })
+                    : jsx('div', { className: 'text-[0.625rem] text-(--ui-text-quaternary)', children: '还没有选默认模型：不选的话工作室会默认用列表第一个' })
                 ]
               })
             : null
@@ -1349,7 +1395,7 @@ function HistoryView() {
 
 // ── templates ──────────────────────────────────────────────────────────────
 
-function TemplateThumb({ source, caseId }) {
+function TemplateThumb({ source, caseId, className }) {
   const query = useQuery({
     queryKey: ['hermes-imagegen', 'template', source, caseId],
     queryFn: () => api.rest(`/templates/image/${source}/${caseId}/inline`),
@@ -1358,40 +1404,67 @@ function TemplateThumb({ source, caseId }) {
     retry: 1
   })
   if (query.isPending) {
-    return jsx('div', { className: 'aspect-[4/3] w-full animate-pulse rounded-[4px] bg-(--ui-bg-tertiary)' })
+    return jsx('div', { className: cn('animate-pulse rounded-[3px] bg-(--ui-bg-tertiary)', className) })
   }
   if (query.error) {
     return jsx('div', {
-      className: 'flex aspect-[4/3] w-full items-center justify-center rounded-[4px] bg-(--ui-bg-tertiary) text-[0.625rem] text-(--ui-text-quaternary)',
-      children: '参考图不可用'
+      className: cn('flex items-center justify-center rounded-[3px] bg-(--ui-bg-tertiary) text-[0.5625rem] text-(--ui-text-quaternary)', className),
+      children: '无图'
     })
   }
   return jsx('img', {
     alt: caseId,
-    className: 'aspect-[4/3] w-full rounded-[4px] border border-(--ui-stroke-secondary) object-cover',
+    className: cn('rounded-[3px] border border-(--ui-stroke-secondary) object-cover', className),
     src: query.data?.data_url || ''
   })
 }
 
+/** One case as a dense row: the prompt is the product, the image is a hint. */
 function TemplateCard({ source, item, favorited, onUse, onToggleFavorite }) {
+  const [expanded, setExpanded] = useState(false)
   return jsxs('div', {
-    className: 'flex flex-col gap-1 rounded-[5px] border border-(--ui-stroke-secondary) p-1.5',
+    className: 'flex gap-2 rounded-[5px] border border-(--ui-stroke-secondary) p-1.5',
     children: [
-      jsx(TemplateThumb, { source, caseId: item.id }),
-      jsx('div', { className: 'line-clamp-2 text-[0.6875rem] font-medium', children: item.title || item.id }),
+      jsx(TemplateThumb, { className: 'h-14 w-14 shrink-0', caseId: item.id, source }),
       jsxs('div', {
-        className: 'flex items-center gap-1 text-[0.625rem] text-(--ui-text-quaternary)',
+        className: 'flex min-w-0 flex-1 flex-col gap-0.5',
         children: [
-          jsx('span', { className: 'truncate', children: item.categoryZh || item.category }),
-          item.sourceLabel ? jsx('span', { className: 'truncate', children: `· ${item.sourceLabel}` }) : null,
-          jsx('span', { className: 'flex-1' }),
-          jsx('button', {
-            className: cn('hover:text-foreground', favorited ? 'text-(--ui-accent)' : ''),
-            onClick: () => onToggleFavorite(item),
-            type: 'button',
-            children: favorited ? '♥' : '♡'
+          jsxs('div', {
+            className: 'flex items-center gap-1',
+            children: [
+              jsx('button', {
+                className: 'min-w-0 flex-1 truncate text-left text-[0.6875rem] font-medium hover:underline',
+                onClick: () => setExpanded(value => !value),
+                type: 'button',
+                children: item.title || item.id
+              }),
+              jsx('button', {
+                className: cn('shrink-0 text-[0.75rem] leading-none hover:text-foreground', favorited ? 'text-(--ui-accent)' : 'text-(--ui-text-quaternary)'),
+                onClick: () => onToggleFavorite(item),
+                type: 'button',
+                children: favorited ? '♥' : '♡'
+              }),
+              jsx(Button, { className: 'shrink-0', size: 'xs', variant: 'ghost', onClick: () => onUse(item), children: '用这条' })
+            ]
           }),
-          jsx(Button, { size: 'xs', variant: 'ghost', onClick: () => onUse(item), children: '用这条' })
+          jsx('div', {
+            className: cn('text-[0.625rem] leading-snug text-(--ui-text-tertiary)', expanded ? 'whitespace-pre-wrap break-words' : 'line-clamp-2'),
+            children: item.prompt || ''
+          }),
+          jsxs('div', {
+            className: 'flex items-center gap-1 text-[0.5625rem] text-(--ui-text-quaternary)',
+            children: [
+              item.categoryZh || item.category ? jsx('span', { className: 'truncate', children: item.categoryZh || item.category }) : null,
+              item.sourceLabel ? jsx('span', { className: 'truncate', children: `· ${item.sourceLabel}` }) : null,
+              jsx('span', { className: 'flex-1' }),
+              jsx('button', {
+                className: 'hover:text-foreground',
+                onClick: () => setExpanded(value => !value),
+                type: 'button',
+                children: expanded ? '收起' : '展开'
+              })
+            ]
+          })
         ]
       })
     ]
@@ -1571,7 +1644,7 @@ function TemplatesView() {
         : jsx('div', {
             className: 'min-h-0 flex-1 overflow-y-auto',
             children: jsxs('div', {
-              className: 'grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-2',
+              className: 'grid grid-cols-[repeat(auto-fill,minmax(340px,1fr))] gap-2',
               children: [
                 ...visible.map(item =>
                   jsx(TemplateCard, {

@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dev deps
+        run: python -m pip install -r requirements-dev.txt
+      - name: Lint
+        run: ruff check .
+      - name: Tests
+        run: python -m pytest tests -q
+      - name: Manifest sanity
+        run: |
+          python - <<'PY'
+          import json, pathlib, re
+          root = pathlib.Path(".")
+          manifest = json.loads((root / "dashboard/manifest.json").read_text())
+          assert manifest["api"] == "plugin_api.py"
+          assert (root / "dashboard/plugin_api.py").exists()
+          assert (root / "__init__.py").exists()
+          yaml_text = (root / "plugin.yaml").read_text()
+          assert re.search(r"^name:\s*hermes-imagegen$", yaml_text, re.M)
+          assert re.search(r"^kind:\s*standalone$", yaml_text, re.M)
+          print("manifest ok")
+          PY

@@ -27,10 +27,38 @@ Hermes Desktop plugin platform.
   history store, instead of the DSH host's task queue.
 - **Not ported in this version:** the infinite canvas, poster editor, e-commerce
   set generator, PNG-to-editable-PPT pipeline, prompt reverse-engineering,
-  template library, subscription channels, the Chat-Completions transport, and
-  the DashScope/MiniMax native protocols. Calls that would need them fail with
-  an explicit code (`protocol-unsupported` / `family-unsupported`), never by
-  silently degrading.
+  subscription channels, the agent's own skill runtime, and the i18n bundles.
+
+## Bundled prompt-template snapshots
+
+`dashboard/imagegen_backend/templates_data/` ships five case-list snapshots
+(≈2,460 cases, JSON only — no image binaries) taken from these projects:
+
+- **yang0/handraw-style** — https://github.com/yang0/handraw-style — MIT,
+  Copyright (c) 2026 yang0
+- **andy7076/image_prompt** — https://github.com/andy7076/image_prompt — MIT,
+  Copyright (c) 2026 andy7076
+- **EvoLinkAI/awesome-gpt-image-2-prompts** —
+  https://github.com/EvoLinkAI/awesome-gpt-image-2-prompts — CC0 1.0 Universal
+- **vibeui** gallery JSON (mirror of awesome-gpt-image-2) —
+  https://vibeui.top/ — fetched from the site's published `cases.json`
+- **canghe** gallery JSON — https://gpt-image2.canghe.ai/ — fetched from the
+  site's published `cases.json`
+
+Reference images are **not** bundled: they are fetched on demand from the source
+each case names, cached under `~/.hermes/imagegen/template-images/<source>/`, and
+served from that cache afterwards. Only hosts pinned per source are allowed.
+
+MIT notice text (applies to the two MIT projects above):
+
+> Permission is hereby granted, free of charge, to any person obtaining a copy of
+> this software and associated documentation files (the "Software"), to deal in
+> the Software without restriction, including without limitation the rights to
+> use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+> the Software, and to permit persons to whom the Software is furnished to do so,
+> subject to the following conditions: The above copyright notice and this
+> permission notice shall be included in all copies or substantial portions of the
+> Software. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
 
 ## Licence
 

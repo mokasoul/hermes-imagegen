@@ -80,6 +80,7 @@ const $references = atom([])
 const $job = atom(null)
 const $error = atom('')
 const $busy = atom(false)
+const $version = atom('')
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -159,6 +160,7 @@ async function refreshSettings() {
 async function loadBootstrap() {
   try {
     const data = await api.rest('/bootstrap')
+    if (data.version) $version.set(data.version)
     $settings.set(data.settings)
     const running = (data.jobs || []).find(job => isRunning(job))
     if (running) $job.set(running)
@@ -463,18 +465,6 @@ function StudioView() {
       jsxs('div', {
         className: 'flex w-[336px] shrink-0 flex-col gap-2.5 overflow-y-auto border-r border-(--ui-stroke-secondary) p-3',
         children: [
-          jsxs('div', {
-            className: 'flex items-center justify-between',
-            children: [
-              jsx('div', { className: 'text-sm font-medium', children: '生图' }),
-              jsx(Button, {
-                size: 'xs',
-                variant: 'ghost',
-                onClick: () => $view.set('channels'),
-                children: '渠道设置'
-              })
-            ]
-          }),
           jsx(SegmentedControl, {
             onChange: mode => patchDraft({ mode }),
             options: MODES,
@@ -861,10 +851,231 @@ function ChannelsView() {
   })
 }
 
+// ── history / gallery ──────────────────────────────────────────────────────
+
+const HISTORY_PAGE = 24
+
+function formatStamp(seconds) {
+  if (typeof seconds !== 'number' || seconds <= 0) return ''
+  const date = new Date(seconds * 1000)
+  const pad = value => String(value).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
+function HistoryRow({ record, onToggleFavorite, onDelete }) {
+  const queryClient = useQueryClient()
+  const [busy, setBusy] = useState(false)
+
+  const download = async image => {
+    setBusy(true)
+    try {
+      const data = await api.rest(`/files/${image.id}/inline`)
+      const extension = (data.mime || 'image/png').split('/')[1] || 'png'
+      const anchor = document.createElement('a')
+      anchor.href = data.data_url
+      anchor.download = `imagegen-${record.id}-${image.id.slice(0, 6)}.${extension}`
+      anchor.click()
+      queryClient.setQueryData(['hermes-imagegen', 'image', image.id], data)
+    } catch (error) {
+      host.notify({ kind: 'error', message: `下载失败：${errorText(error)}` })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const first = (record.images || [])[0]
+
+  return jsxs('div', {
+    className: 'flex gap-3 rounded-[5px] border border-(--ui-stroke-secondary) p-2',
+    children: [
+      jsx('div', {
+        className: 'h-24 w-24 shrink-0 overflow-hidden rounded-[4px] bg-(--ui-bg-tertiary)',
+        children: first
+          ? jsx(ImageView, { image: first, className: '!border-0', onOpen: () => dumpRecordToStudio(record) })
+          : jsx('div', {
+              className: 'flex h-full items-center justify-center text-[0.625rem] text-(--ui-text-quaternary)',
+              children: record.status === 'failed' ? '失败' : '无图'
+            })
+      }),
+      jsxs('div', {
+        className: 'flex min-w-0 flex-1 flex-col gap-1',
+        children: [
+          jsxs('div', {
+            className: 'flex items-center gap-1.5 text-[0.6875rem] text-(--ui-text-tertiary)',
+            children: [
+              jsx('span', { children: formatStamp(record.created_at) }),
+              jsx(Badge, { size: 'xs', children: record.channel_name || record.channel_id || '—' }),
+              jsx(Badge, { size: 'xs', children: record.model || '—' }),
+              record.favorite ? jsx(Badge, { size: 'xs', variant: 'success', children: '已收藏' }) : null,
+              record.status !== 'succeeded' ? jsx(Badge, { size: 'xs', variant: 'warn', children: record.status }) : null,
+              jsx('span', { className: 'flex-1' }),
+              typeof record.duration_ms === 'number' ? jsx('span', { children: formatDuration(record.duration_ms) }) : null
+            ]
+          }),
+          jsx('div', {
+            className: 'line-clamp-2 text-xs text-foreground',
+            children: record.prompt || '(无提示词)'
+          }),
+          record.error ? jsx('div', { className: 'truncate text-[0.625rem] text-(--ui-danger)', children: record.error }) : null,
+          jsxs('div', {
+            className: 'flex flex-wrap items-center gap-1',
+            children: [
+              jsx(Button, { size: 'xs', variant: 'ghost', onClick: () => dumpRecordToStudio(record), children: '载入参数' }),
+              jsxs(Button, {
+                size: 'xs',
+                variant: 'ghost',
+                disabled: busy,
+                onClick: () => onToggleFavorite(record),
+                children: [record.favorite ? '取消收藏' : '收藏']
+              }),
+              ...(record.images || []).map(image =>
+                jsx(
+                  Button,
+                  { size: 'xs', variant: 'ghost', disabled: busy, onClick: () => download(image), children: `下载 ${image.id.slice(0, 4)}` },
+                  image.id
+                )
+              ),
+              jsx('span', { className: 'flex-1' }),
+              jsx(Button, { size: 'xs', variant: 'ghost', onClick: () => onDelete(record), children: '删除' })
+            ]
+          })
+        ]
+      })
+    ]
+  })
+}
+
+function dumpRecordToStudio(record) {
+  const params = record.params || {}
+  patchDraft({
+    mode: record.mode || 'generate',
+    channelId: record.channel_id || $draft.get().channelId,
+    model: record.model || '',
+    prompt: record.prompt || '',
+    size: params.size || '1:1',
+    quality: params.quality || '2k',
+    n: params.n || 1
+  })
+  $view.set('studio')
+  haptic('tap')
+}
+
+function HistoryView() {
+  const [favoriteOnly, setFavoriteOnly] = useState(false)
+  const [items, setItems] = useState([])
+  const [total, setTotal] = useState(0)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  const load = useCallback(
+    async (offset = 0, favorites = favoriteOnly) => {
+      setLoading(true)
+      setError('')
+      try {
+        const data = await api.rest(`/history?limit=${HISTORY_PAGE}&offset=${offset}&favorite=${favorites ? 'true' : 'false'}`)
+        setTotal(data.total || 0)
+        setItems(current => (offset === 0 ? data.items || [] : [...current, ...(data.items || [])]))
+      } catch (readError) {
+        setError(errorText(readError))
+      } finally {
+        setLoading(false)
+      }
+    },
+    [favoriteOnly]
+  )
+
+  useEffect(() => {
+    load(0, favoriteOnly)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [favoriteOnly])
+
+  const toggleFavorite = async record => {
+    try {
+      await api.rest(`/history/${record.id}/favorite`, { method: 'POST', body: { value: !record.favorite } })
+      setItems(current =>
+        favoriteOnly
+          ? current.filter(item => item.id !== record.id)
+          : current.map(item => (item.id === record.id ? { ...item, favorite: record.favorite ? 0 : 1 } : item))
+      )
+    } catch (writeError) {
+      host.notify({ kind: 'error', message: `收藏失败：${errorText(writeError)}` })
+    }
+  }
+
+  const remove = async record => {
+    try {
+      await api.rest(`/history/${record.id}`, { method: 'DELETE' })
+      setItems(current => current.filter(item => item.id !== record.id))
+      setTotal(current => Math.max(0, current - 1))
+    } catch (writeError) {
+      host.notify({ kind: 'error', message: `删除失败：${errorText(writeError)}` })
+    }
+  }
+
+  return jsxs('div', {
+    className: 'flex h-full min-h-0 flex-col gap-2 p-3',
+    children: [
+      jsxs('div', {
+        className: 'flex items-center gap-2',
+        children: [
+          jsx(SegmentedControl, {
+            onChange: value => setFavoriteOnly(value === 'favorite'),
+            options: [
+              { id: 'all', label: '全部' },
+              { id: 'favorite', label: '收藏' }
+            ],
+            sizing: 'content',
+            value: favoriteOnly ? 'favorite' : 'all'
+          }),
+          jsx('span', { className: 'text-[0.6875rem] text-(--ui-text-tertiary)', children: `共 ${total} 条` }),
+          jsx('span', { className: 'flex-1' }),
+          jsx(Button, { size: 'xs', variant: 'ghost', disabled: loading, onClick: () => load(0, favoriteOnly), children: '刷新' })
+        ]
+      }),
+      error ? jsx('div', { className: 'text-[0.6875rem] text-(--ui-danger)', children: error }) : null,
+      total === 0 && !loading
+        ? jsx(EmptyState, {
+            className: 'flex-1',
+            description: favoriteOnly ? '还没有收藏的记录。' : '生成过的图片会按时间出现在这里，可载入参数或收藏。',
+            title: favoriteOnly ? '没有收藏' : '还没有历史'
+          })
+        : jsx('div', {
+            className: 'flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto',
+            children: [
+              ...items.map(record =>
+                jsx(HistoryRow, {
+                  key: record.id,
+                  onDelete: remove,
+                  onToggleFavorite: toggleFavorite,
+                  record
+                })
+              ),
+              items.length < total
+                ? jsx(Button, {
+                    size: 'xs',
+                    variant: 'outline',
+                    disabled: loading,
+                    onClick: () => load(items.length, favoriteOnly),
+                    children: loading ? '加载中…' : '加载更多'
+                  })
+                : null
+            ]
+          })
+    ]
+  })
+}
+
 // ── page ───────────────────────────────────────────────────────────────────
+
+const VIEWS = [
+  { id: 'studio', label: '工作室' },
+  { id: 'history', label: '历史' },
+  { id: 'channels', label: '渠道' }
+]
 
 function ImageGenPage() {
   const view = useValue($view)
+  const version = useValue($version)
   const [ready, setReady] = useState(false)
 
   useEffect(() => {
@@ -877,9 +1088,37 @@ function ImageGenPage() {
     }
   }, [])
 
-  return jsx('div', {
+  const body =
+    view === 'channels'
+      ? jsx(ChannelsView, {})
+      : view === 'history'
+        ? jsx(HistoryView, {})
+        : jsx(StudioView, {})
+
+  return jsxs('div', {
     className: 'flex h-full min-h-0 flex-col',
-    children: ready ? (view === 'channels' ? jsx(ChannelsView, {}) : jsx(StudioView, {})) : jsx('div', { className: 'p-4', children: jsx(GlyphSpinner, {}) })
+    children: [
+      jsxs('div', {
+        className: 'flex items-center gap-2 border-b border-(--ui-stroke-secondary) px-3 py-1.5',
+        children: [
+          jsx('div', { className: 'text-sm font-medium', children: '生图' }),
+          jsx(SegmentedControl, {
+            onChange: next => $view.set(next),
+            options: VIEWS,
+            sizing: 'content',
+            value: view
+          }),
+          jsx('span', { className: 'flex-1' }),
+          version
+            ? jsx('span', { className: 'text-[0.625rem] text-(--ui-text-quaternary)', children: `v${version}` })
+            : null
+        ]
+      }),
+      jsx('div', {
+        className: 'min-h-0 flex-1',
+        children: ready ? body : jsx('div', { className: 'p-4', children: jsx(GlyphSpinner, {}) })
+      })
+    ]
   })
 }
 

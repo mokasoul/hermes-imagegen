@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS generations (
   params TEXT,
   duration_ms INTEGER,
   error TEXT,
-  error_code TEXT
+  error_code TEXT,
+  favorite INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS images (
   id TEXT PRIMARY KEY,
@@ -74,6 +75,11 @@ class HistoryStore:
     def _init_schema(self) -> None:
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
+            # Additive migration: a database created before favourites existed
+            # keeps its rows — ALTER TABLE only adds the missing column.
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(generations)")}
+            if "favorite" not in columns:
+                conn.execute("ALTER TABLE generations ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0")
 
     # --- writes ----------------------------------------------------------
 
@@ -171,13 +177,14 @@ class HistoryStore:
         record["images"] = [self._image_public(dict(image)) for image in images]
         return record
 
-    def list(self, limit: int = 30, offset: int = 0) -> dict[str, Any]:
+    def list(self, limit: int = 30, offset: int = 0, favorite_only: bool = False) -> dict[str, Any]:
         limit = max(1, min(200, int(limit)))
         offset = max(0, int(offset))
+        where = " WHERE favorite = 1" if favorite_only else ""
         with self._connect() as conn:
-            total = conn.execute("SELECT COUNT(*) AS n FROM generations").fetchone()["n"]
+            total = conn.execute(f"SELECT COUNT(*) AS n FROM generations{where}").fetchone()["n"]
             rows = conn.execute(
-                "SELECT * FROM generations ORDER BY created_at DESC LIMIT ? OFFSET ?", (limit, offset)
+                f"SELECT * FROM generations{where} ORDER BY created_at DESC LIMIT ? OFFSET ?", (limit, offset)
             ).fetchall()
             records: list[dict[str, Any]] = []
             for row in rows:
@@ -192,6 +199,16 @@ class HistoryStore:
                 record["images"] = [self._image_public(dict(image)) for image in images]
                 records.append(record)
         return {"items": records, "total": total, "limit": limit, "offset": offset}
+
+    def set_favorite(self, generation_id: str, value: bool) -> dict[str, Any] | None:
+        """Star/unstar one generation; returns the record, or None when absent."""
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE generations SET favorite = ? WHERE id = ?", (1 if value else 0, generation_id)
+            )
+        if cursor.rowcount == 0:
+            return None
+        return self.get(generation_id)
 
     def image_path(self, image_id: str) -> tuple[Path, str] | None:
         with self._connect() as conn:

@@ -1275,6 +1275,22 @@ function ensurePanelCss() {
     })
 }
 
+/** Loads a history record's prompt + params back into the studio. */
+function loadRecordIntoStudio(record) {
+  const params = record.params || {}
+  const patch = {
+    mode: record.mode === 'edit' ? 'edit' : 'generate',
+    prompt: record.prompt || ''
+  }
+  if (record.model) patch.model = record.model
+  if (params.size) patch.size = params.size
+  if (params.quality) patch.quality = params.quality
+  if (params.n) patch.n = params.n
+  patchDraft(patch)
+  $view.set('studio')
+  host.notify({ kind: 'success', message: '参数已载入工作室' })
+}
+
 const GALLERY_MODEL_BADGE = model => {
   const lowered = String(model || '').toLowerCase()
   if (lowered.startsWith('nanobanana')) return 'N'
@@ -1644,7 +1660,7 @@ function HistoryView() {
                     key: record.id,
                     onDelete: remove,
                     onEditTags: editTags,
-                    onLoad: dumpRecordToStudio,
+                    onLoad: loadRecordIntoStudio,
                     onSelect: toggleSelect,
                     onTagClick: tag => setTagFilter(current => (current === tag ? '' : tag)),
                     onToggleFavorite: toggleFavorite,

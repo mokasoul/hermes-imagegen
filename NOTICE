@@ -1,0 +1,40 @@
+# NOTICE — hermes-imagegen
+
+This project is a **port** of [dickpy/dsh-imagegen](https://github.com/dickpy/dsh-imagegen)
+(version 1.18.1, Apache-2.0) from the DeepSeek Harness (DSH) web GUI to the
+Hermes Desktop plugin platform.
+
+## What was reused
+
+- The model-family catalog and per-provider request shaping tables
+  (`src/model-catalog.ts`, `effectiveParams()` / `effectiveCount()` in
+  `src/engine.ts`) — ported to `dashboard/imagegen_backend/models.py`, tables
+  copied verbatim so provider wire formats do not drift.
+- The upstream response-handling rules in `src/engine.ts`: base64/URL result
+  normalisation, the same-origin rule for forwarding the Bearer on result
+  downloads, async `task_id` polling on `/tasks/{id}`, and the stable error
+  codes (`config-missing`, `upstream-rejected`, `mask-size-mismatch`, …).
+- The multi-reference upload convention (`image[]` repeated, mask as PNG
+  matching the first reference's pixel size).
+
+## What was rewritten
+
+- The host integration: DSH's cordis plugin, `@deepseek-ai/dsh-*` client
+  packages, host settings seam and route family have no analogue here, so the
+  backend is a FastAPI router (`/api/plugins/hermes-imagegen/`) and the UI is a
+  Hermes Desktop plugin.
+- The generation queue: an in-process asyncio job registry plus a SQLite
+  history store, instead of the DSH host's task queue.
+- **Not ported in this version:** the infinite canvas, poster editor, e-commerce
+  set generator, PNG-to-editable-PPT pipeline, prompt reverse-engineering,
+  template library, subscription channels, the Chat-Completions transport, and
+  the DashScope/MiniMax native protocols. Calls that would need them fail with
+  an explicit code (`protocol-unsupported` / `family-unsupported`), never by
+  silently degrading.
+
+## Licence
+
+Apache-2.0, matching the upstream project. See `LICENSE`.
+Third-party assets referenced by the upstream project (prompt template
+libraries) are not bundled here; see the upstream `THIRD_PARTY_NOTICES.md` if
+they are ever imported.

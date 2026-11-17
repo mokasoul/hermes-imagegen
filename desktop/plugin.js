@@ -635,9 +635,33 @@ function StudioView() {
   const channel = activeChannel(settings, draft.channelId)
   const models = (channel && channel.models) || []
 
+  const detectModels = async () => {
+    if (!channel) return
+    setDetecting(true)
+    try {
+      const result = await api.rest('/channels/detect', {
+        method: 'POST',
+        body: { channel_id: channel.id, save: true },
+        timeoutMs: 60000
+      })
+      const found = (result.models || []).map(model => model.id)
+      await refreshSettings()
+      // Pick the first detected model so the studio is immediately usable.
+      if (found.length && !found.includes($draft.get().model)) {
+        patchDraft({ model: found[0] })
+      }
+      host.notify({ kind: 'success', message: found.length ? `检测到 ${found.length} 个模型` : '没有检测到生图模型' })
+    } catch (detectError) {
+      host.notify({ kind: 'error', message: `检测失败：${errorText(detectError)}` })
+    } finally {
+      setDetecting(false)
+    }
+  }
+
   const [promptModels, setPromptModels] = useState([])
   const [promptBusy, setPromptBusy] = useState('')
   const [promptError, setPromptError] = useState('')
+  const [detecting, setDetecting] = useState(false)
 
   useEffect(() => {
     if (!draft.channelId) {
@@ -722,9 +746,20 @@ function StudioView() {
                       })
                     ]
                   })
-                : jsx('div', {
-                    className: 'text-[0.6875rem] text-(--ui-text-tertiary)',
-                    children: '该渠道还没有模型，去「渠道设置」点「检测模型」'
+                : jsxs('div', {
+                    className: 'flex items-center gap-2 text-[0.6875rem] text-(--ui-text-tertiary)',
+                    children: [
+                      jsx('span', { children: channel ? '这个渠道还没有模型：' : '先选一个渠道' }),
+                      channel
+                        ? jsx('button', {
+                            className: 'text-(--ui-accent) hover:underline',
+                            disabled: detecting,
+                            onClick: detectModels,
+                            type: 'button',
+                            children: detecting ? '检测中…' : '点这里检测模型'
+                          })
+                        : null
+                    ]
                   })
             ]
           }),
@@ -894,7 +929,9 @@ function ChannelsView() {
   const patch = value => setForm(current => ({ ...current, ...value }))
 
   const edit = channel => {
-    setDetected([])
+    // Seed from the saved list so an already-detected channel can still be picked
+    // without re-running detection after a restart.
+    setDetected((channel.models || []).map(id => ({ id, known: true })))
     setStatus('')
     setForm({
       id: channel.id,

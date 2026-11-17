@@ -23,6 +23,7 @@
 | 历史记录（SQLite）+ 图片落盘 + 服务端取图 | ✅ |
 | 桌面工作台（`/imagegen` 整页 + 侧边栏入口 + ⌘K 命令：提示词、模式、渠道/模型、比例、清晰度、数量、参考图、结果下载/复用、参数记忆） | ✅ |
 | 历史 / 画廊（分页浏览、收藏筛选、载入参数、单图下载、删除记录与文件） | ✅ |
+| 对话出图工具（`generate_image` / `edit_image` / `get_image_generation_task` / `cancel_image_generation_task`，与工作台共用同一任务队列与历史） | ✅ |
 | 无限画布、海报文字/Logo 编辑、电商套图、图片转可编辑 PPT、提示词反推、模板库、订阅渠道 | ⏳ 进行中 |
 
 后端对每条渠道自动判定协议（`api_url` 以 `/chat/completions` 结尾 → Chat；DashScope 官方域上的 qwen-image → 原生 Qwen；`image-*` → MiniMax 原生；其余走 OpenAI Images 与各模型族塑形），也可在渠道设置里手动指定。判定不出的地址不会被猜着打。

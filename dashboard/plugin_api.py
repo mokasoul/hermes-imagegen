@@ -28,9 +28,8 @@ import base64
 import logging
 import re
 import sys
-import threading
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse
@@ -42,6 +41,7 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 from imagegen_backend import engine as image_engine  # noqa: E402
+from imagegen_backend import runtime  # noqa: E402
 from imagegen_backend.jobs import JobError, JobRunner  # noqa: E402
 from imagegen_backend.settings import Settings, SettingsError  # noqa: E402
 from imagegen_backend.store import HistoryStore  # noqa: E402
@@ -51,11 +51,6 @@ log = logging.getLogger(__name__)
 router = APIRouter()
 
 _PLUGIN_YAML = _HERE.parent / "plugin.yaml"
-
-_lock = threading.Lock()
-_settings: Optional[Settings] = None
-_store: Optional[HistoryStore] = None
-_runner: Optional[JobRunner] = None
 
 
 def _plugin_version() -> str:
@@ -67,35 +62,18 @@ def _plugin_version() -> str:
     return match.group(1).strip() if match else "0.0.0"
 
 
+# Settings / history / jobs live in `runtime` so the agent tools (loaded from the
+# package __init__) and these routes share one instance of each.
 def _get_settings() -> Settings:
-    global _settings
-    with _lock:
-        if _settings is None:
-            _settings = Settings()
-        return _settings
+    return runtime.settings()
 
 
 def _get_store() -> HistoryStore:
-    global _store
-    with _lock:
-        if _store is None:
-            _store = HistoryStore()
-        return _store
+    return runtime.store()
 
 
 def _get_runner() -> JobRunner:
-    # Note: never call another _get_* from inside a ``with _lock`` block — the
-    # lock is not reentrant, and the resulting self-deadlock only shows up as a
-    # request that never returns.
-    global _runner
-    if _runner is not None:
-        return _runner
-    settings = _get_settings()
-    store = _get_store()
-    with _lock:
-        if _runner is None:
-            _runner = JobRunner(settings, store)
-        return _runner
+    return runtime.runner()
 
 
 def _bad(error: Exception) -> HTTPException:

@@ -54,11 +54,21 @@ API 密钥永不出现在任何接口响应里（只回显 `…后四位`）；�
 ## 开发
 
 ```bash
-python3.11 -m venv .venv
-.venv/bin/pip install -r requirements-dev.txt
-.venv/bin/python -m pytest tests -q     # 49 项测试，全部离线（MockTransport）
-.venv/bin/ruff check .
+# venv 必须放在包目录外：这个目录会被整体复制进 ~/.hermes/desktop-plugins/（树上限 64MB）
+python3.11 -m venv ../.venv-imagegen
+../.venv-imagegen/bin/pip install -r requirements-dev.txt
+../.venv-imagegen/bin/python -m pytest tests -q     # 50 项测试，全部离线（MockTransport）
+../.venv-imagegen/bin/ruff check .
 ```
+
+本地联调：把 checkout 软链进插件目录（`linked` 开发模式，保存即热重载，无需 Rescan）：
+
+```bash
+ln -s "$PWD" ~/.hermes/plugins/hermes-imagegen
+hermes plugins enable hermes-imagegen
+```
+
+桌面半仍是 opt-in：Hermes Desktop → Capabilities → Plugins → 打开 `hermes-imagegen`。
 
 目录结构：
 

@@ -1,6 +1,6 @@
 [project]
 name = "hermes-imagegen"
-version = "0.5.0"
+version = "0.6.0"
 description = "AI image generation workbench plugin for Hermes (port of dickpy/dsh-imagegen)"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }

@@ -40,6 +40,7 @@ _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
+from imagegen_backend import canvas as canvas_store  # noqa: E402
 from imagegen_backend import engine as image_engine  # noqa: E402
 from imagegen_backend import prompt_tools, runtime  # noqa: E402
 from imagegen_backend import templates as template_library  # noqa: E402
@@ -268,6 +269,88 @@ async def image_inline(image_id: str) -> dict[str, Any]:
         "mime": mime,
         "data_url": f"data:{mime};base64,{base64.b64encode(data).decode()}",
     }
+
+
+# --- infinite canvas -----------------------------------------------------
+
+
+@router.get("/canvas/pages")
+async def canvas_pages() -> dict[str, Any]:
+    return {"pages": canvas_store.list_pages()}
+
+
+@router.post("/canvas/pages")
+async def canvas_create(body: dict[str, Any]) -> dict[str, Any]:
+    return {"page": canvas_store.create_page(str(body.get("title") or "未命名画布"))}
+
+
+@router.get("/canvas/pages/{canvas_id}")
+async def canvas_read(canvas_id: str) -> dict[str, Any]:
+    try:
+        return {"page": canvas_store.read_page(canvas_id)}
+    except canvas_store.CanvasError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@router.put("/canvas/pages/{canvas_id}")
+async def canvas_save(canvas_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    document = body.get("document")
+    if not isinstance(document, dict):
+        raise HTTPException(status_code=400, detail="缺少 document")
+    revision = body.get("revision")
+    try:
+        page = canvas_store.save_page(canvas_id, document, int(revision) if revision is not None else None)
+    except canvas_store.CanvasConflict as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except canvas_store.CanvasError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return {"page": page}
+
+
+@router.delete("/canvas/pages/{canvas_id}")
+async def canvas_remove(canvas_id: str) -> dict[str, Any]:
+    try:
+        canvas_store.remove_page(canvas_id)
+    except canvas_store.CanvasError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    return {"ok": True}
+
+
+@router.post("/canvas/pages/{canvas_id}/favorite")
+async def canvas_favorite(canvas_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return canvas_store.set_favorite(canvas_id, bool(body.get("favorite", True)))
+    except canvas_store.CanvasError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@router.post("/canvas/assets")
+async def canvas_asset_upload(body: dict[str, Any]) -> dict[str, Any]:
+    data_url = str(body.get("data_url") or "")
+    if not data_url:
+        raise HTTPException(status_code=400, detail="缺少 data_url")
+    try:
+        return {"asset": canvas_store.save_asset_data_url(data_url, str(body.get("name") or ""))}
+    except canvas_store.CanvasError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@router.get("/canvas/assets/{asset_id}")
+async def canvas_asset(asset_id: str) -> Response:
+    try:
+        data, mime = canvas_store.read_asset(asset_id)
+    except canvas_store.CanvasError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    return Response(content=data, media_type=mime, headers={"cache-control": "private, max-age=31536000, immutable"})
+
+
+@router.get("/canvas/assets/{asset_id}/inline")
+async def canvas_asset_inline(asset_id: str) -> dict[str, Any]:
+    try:
+        data, mime = canvas_store.read_asset(asset_id)
+    except canvas_store.CanvasError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    return {"id": asset_id, "mime": mime, "data_url": f"data:{mime};base64,{base64.b64encode(data).decode()}"}
 
 
 # --- prompt helpers ------------------------------------------------------

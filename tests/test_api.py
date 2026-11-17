@@ -16,14 +16,15 @@ from imagegen_backend import engine as image_engine
 def client(monkeypatch):
     import plugin_api
 
+    from imagegen_backend import runtime
+
     # Fresh stores per test: the data root moves with HERMES_IMAGEGEN_DATA.
-    monkeypatch.setattr(plugin_api, "_settings", None)
-    monkeypatch.setattr(plugin_api, "_store", None)
-    monkeypatch.setattr(plugin_api, "_runner", None)
+    runtime.reset_for_tests()
     app = FastAPI()
     app.include_router(plugin_api.router, prefix="/api/plugins/hermes-imagegen")
     with TestClient(app) as test_client:
         yield test_client
+    runtime.reset_for_tests()
 
 
 def _add_channel(client, **overrides):

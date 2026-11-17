@@ -37,7 +37,9 @@ def png_data_url(width: int = 1, height: int = 1) -> str:
 def isolated_data_root(tmp_path, monkeypatch):
     """Every test gets its own data dir — never a real ~/.hermes/imagegen."""
     monkeypatch.setenv("HERMES_IMAGEGEN_DATA", str(tmp_path / "imagegen"))
-    from imagegen_backend import paths
+    from imagegen_backend import paths, runtime
 
     paths.data_root()
+    runtime.reset_for_tests()
     yield
+    runtime.reset_for_tests()

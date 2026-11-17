@@ -42,6 +42,7 @@ if str(_HERE) not in sys.path:
 
 from imagegen_backend import canvas as canvas_store  # noqa: E402
 from imagegen_backend import engine as image_engine  # noqa: E402
+from imagegen_backend import poster as poster_kit  # noqa: E402
 from imagegen_backend import prompt_tools, runtime  # noqa: E402
 from imagegen_backend import templates as template_library  # noqa: E402
 from imagegen_backend.jobs import JobError, JobRunner  # noqa: E402
@@ -342,6 +343,19 @@ async def canvas_asset(asset_id: str) -> Response:
     except canvas_store.CanvasError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     return Response(content=data, media_type=mime, headers={"cache-control": "private, max-age=31536000, immutable"})
+
+
+@router.get("/canvas/assets/{asset_id}/poster")
+async def canvas_asset_poster(asset_id: str) -> dict[str, Any]:
+    """A starting poster recipe for one asset (image = background, one title layer)."""
+    try:
+        data, mime = canvas_store.read_asset(asset_id)
+        recipe = poster_kit.default_recipe({"id": asset_id, "mime": mime, "name": ""}, data)
+    except canvas_store.CanvasError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except poster_kit.PosterError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return {"recipe": recipe}
 
 
 @router.get("/canvas/assets/{asset_id}/inline")

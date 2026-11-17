@@ -115,6 +115,14 @@ def _normalise_metadata(raw: Any) -> dict[str, Any]:
             "mime": str(asset.get("mime") or "image/png"),
             "name": str(asset.get("name") or ""),
         }
+    if "poster" in raw and raw["poster"] is not None:
+        # A bad recipe must fail the save, not the export three clicks later.
+        from . import poster as poster_mod
+
+        try:
+            meta["poster"] = poster_mod.validate(raw["poster"])
+        except poster_mod.PosterError as error:
+            raise CanvasError(str(error)) from error
     return meta
 
 

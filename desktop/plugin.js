@@ -1483,6 +1483,368 @@ function CanvasImageView({ asset, scale }) {
   return jsx('img', { alt: asset.name || '', className: 'min-h-0 w-full flex-1 rounded object-contain', src: query.data?.data_url || '' })
 }
 
+function posterLines(ctx, text, width) {
+  const lines = []
+  for (const paragraph of String(text).split('\n')) {
+    let line = ''
+    for (const glyph of Array.from(paragraph)) {
+      if (line !== '' && ctx.measureText(line + glyph).width > width) {
+        lines.push(line)
+        line = ''
+      }
+      line += glyph
+    }
+    lines.push(line)
+  }
+  return lines
+}
+
+function paintPoster(ctx, doc, images) {
+  ctx.clearRect(0, 0, doc.width, doc.height)
+  const background = images.get(doc.background.id)
+  if (background) ctx.drawImage(background, 0, 0, doc.width, doc.height)
+  for (const layer of doc.layers) {
+    ctx.save()
+    if (layer.type === 'image') {
+      const image = images.get(layer.asset.id)
+      if (image) ctx.drawImage(image, layer.x, layer.y, layer.width, layer.height)
+    } else {
+      ctx.beginPath()
+      ctx.rect(layer.x, layer.y, layer.width, Math.max(0, doc.height - layer.y))
+      ctx.clip()
+      ctx.font = `${layer.bold ? 700 : 400} ${layer.fontSize}px ${layer.fontFamily}`
+      ctx.fillStyle = layer.color
+      ctx.textBaseline = 'top'
+      ctx.textAlign = layer.align
+      const x = layer.x + (layer.align === 'center' ? layer.width / 2 : layer.align === 'right' ? layer.width : 0)
+      posterLines(ctx, layer.text, layer.width).forEach((line, index) => {
+        ctx.fillText(line, x, layer.y + index * layer.fontSize * 1.25)
+      })
+    }
+    ctx.restore()
+  }
+}
+
+function PosterEditor({ asset, initialRecipe, onClose, onSaved }) {
+  const [doc, setDoc] = useState(initialRecipe)
+  const [selected, setSelected] = useState((initialRecipe.layers[0] || {}).id || '')
+  const [busy, setBusy] = useState('')
+  const [error, setError] = useState('')
+  const canvasRef = useRef(null)
+  const dragRef = useRef(null)
+  const imagesRef = useRef(new Map())
+
+  const assetIds = useMemo(() => {
+    if (!doc) return []
+    const ids = new Set([doc.background.id])
+    for (const layer of doc.layers) if (layer.type === 'image') ids.add(layer.asset.id)
+    return [...ids]
+  }, [doc])
+
+  useEffect(() => {
+    let alive = true
+    Promise.all(
+      assetIds.map(async assetId => {
+        if (imagesRef.current.has(assetId)) return null
+        const data = await api.rest(`/canvas/assets/${assetId}/inline`)
+        const image = new Image()
+        await new Promise((resolve, reject) => {
+          image.onload = () => resolve()
+          image.onerror = () => reject(new Error('图片加载失败'))
+          image.src = data.data_url
+        })
+        return [assetId, image]
+      })
+    )
+      .then(pairs => {
+        if (!alive) return
+        for (const pair of pairs) if (pair) imagesRef.current.set(pair[0], pair[1])
+        const canvas = canvasRef.current
+        if (!canvas || !doc) return
+        canvas.width = doc.width
+        canvas.height = doc.height
+        paintPoster(canvas.getContext('2d'), doc, imagesRef.current)
+      })
+      .catch(loadError => setError(errorText(loadError)))
+    return () => {
+      alive = false
+    }
+  }, [assetIds])
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas || !doc) return
+    canvas.width = doc.width
+    canvas.height = doc.height
+    paintPoster(canvas.getContext('2d'), doc, imagesRef.current)
+  }, [doc])
+
+  useEffect(() => {
+    const move = event => {
+      if (!dragRef.current || !doc) return
+      const rect = canvasRef.current.getBoundingClientRect()
+      const scale = doc.width / rect.width
+      const layer = doc.layers.find(entry => entry.id === dragRef.current.layerId)
+      if (!layer) return
+      const x = Math.round(dragRef.current.originX + (event.clientX - dragRef.current.startX) * scale)
+      const y = Math.round(dragRef.current.originY + (event.clientY - dragRef.current.startY) * scale)
+      setDoc(current => ({
+        ...current,
+        layers: current.layers.map(entry =>
+          entry.id === layer.id ? { ...entry, x: Math.max(0, Math.min(current.width - 8, x)), y: Math.max(0, Math.min(current.height - 8, y)) } : entry
+        )
+      }))
+    }
+    const up = () => {
+      dragRef.current = null
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+    return () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+    }
+  }, [doc])
+
+  if (!doc) {
+    return jsxs('div', {
+      className: 'flex h-full items-center justify-center gap-2 text-xs',
+      children: [
+        jsx(GlyphSpinner, {}),
+        jsx('span', { children: '准备海报底图…' }),
+        error ? jsx('span', { className: 'text-(--ui-danger)', children: error }) : null
+      ]
+    })
+  }
+
+  const current = doc.layers.find(layer => layer.id === selected)
+  const patchLayer = patch => {
+    setDoc(prev => ({ ...prev, layers: prev.layers.map(layer => (layer.id === selected ? { ...layer, ...patch } : layer)) }))
+  }
+
+  const addText = () => {
+    const id = `t_${Math.random().toString(36).slice(2, 8)}`
+    const margin = Math.max(16, Math.round(doc.width * 0.06))
+    setDoc(prev => ({
+      ...prev,
+      layers: [
+        ...prev.layers,
+        {
+          id,
+          type: 'text',
+          x: margin,
+          y: Math.round(prev.height * 0.7),
+          width: prev.width - margin * 2,
+          text: '新文字',
+          fontSize: Math.max(18, Math.round(prev.height * 0.045)),
+          fontFamily: 'sans-serif',
+          color: '#ffffff',
+          bold: false,
+          align: 'left'
+        }
+      ]
+    }))
+    setSelected(id)
+  }
+
+  const addLogo = async () => {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.accept = 'image/*'
+    input.onchange = async () => {
+      const file = input.files && input.files[0]
+      if (!file) return
+      setBusy('logo')
+      try {
+        const dataUrl = await new Promise((resolve, reject) => {
+          const reader = new FileReader()
+          reader.onload = () => resolve(String(reader.result || ''))
+          reader.onerror = () => reject(new Error('读取文件失败'))
+          reader.readAsDataURL(file)
+        })
+        const uploaded = await api.rest('/canvas/assets', { method: 'POST', body: { data_url: dataUrl, name: file.name } })
+        const image = new Image()
+        await new Promise((resolve, reject) => {
+          image.onload = () => resolve()
+          image.onerror = () => reject(new Error('图片加载失败'))
+          image.src = dataUrl
+        })
+        imagesRef.current.set(uploaded.asset.id, image)
+        const targetWidth = Math.round(doc.width * 0.25)
+        const ratio = image.height / Math.max(1, image.width)
+        const id = `l_${Math.random().toString(36).slice(2, 8)}`
+        setDoc(prev => ({
+          ...prev,
+          layers: [
+            ...prev.layers,
+            {
+              id,
+              type: 'image',
+              x: Math.round(prev.width * 0.06),
+              y: Math.round(prev.height * 0.86),
+              width: targetWidth,
+              height: Math.round(targetWidth * ratio),
+              asset: uploaded.asset
+            }
+          ]
+        }))
+        setSelected(id)
+      } catch (uploadError) {
+        setError(errorText(uploadError))
+      } finally {
+        setBusy('')
+      }
+    }
+    input.click()
+  }
+
+  const removeLayer = () => {
+    if (!current) return
+    setDoc(prev => ({ ...prev, layers: prev.layers.filter(layer => layer.id !== current.id) }))
+    setSelected('')
+  }
+
+  const exportPng = () => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const link = document.createElement('a')
+    link.href = canvas.toDataURL('image/png')
+    link.download = `poster-${Date.now()}.png`
+    link.click()
+  }
+
+  const saveToCanvas = async () => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    setBusy('save')
+    try {
+      const dataUrl = canvas.toDataURL('image/png')
+      const uploaded = await api.rest('/canvas/assets', { method: 'POST', body: { data_url: dataUrl, name: 'poster.png' } })
+      onSaved({ asset: uploaded.asset, poster: doc })
+      haptic('success')
+    } catch (saveError) {
+      setError(errorText(saveError))
+    } finally {
+      setBusy('')
+    }
+  }
+
+  return jsxs('div', {
+    className: 'absolute inset-0 z-10 flex flex-col bg-(--ui-bg-primary)/95 p-2',
+    children: [
+      jsxs('div', {
+        className: 'flex flex-wrap items-center gap-1',
+        children: [
+          jsx('span', { className: 'text-xs font-medium', children: `海报编辑 · ${doc.width}×${doc.height}` }),
+          jsx(Button, { size: 'xs', variant: 'ghost', onClick: addText, children: '+ 文字' }),
+          jsx(Button, { size: 'xs', variant: 'ghost', disabled: busy === 'logo', onClick: addLogo, children: '+ Logo' }),
+          jsx(Button, { size: 'xs', variant: 'ghost', disabled: Boolean(busy), onClick: exportPng, children: '导出 PNG' }),
+          jsx(Button, { size: 'xs', disabled: Boolean(busy), onClick: saveToCanvas, children: busy === 'save' ? '保存中…' : '保存到画布' }),
+          jsx('span', { className: 'flex-1' }),
+          error ? jsx('span', { className: 'max-w-[240px] truncate text-[0.625rem] text-(--ui-danger)', children: error }) : null,
+          jsx(Button, { size: 'xs', variant: 'ghost', onClick: onClose, children: '关闭' })
+        ]
+      }),
+      jsxs('div', {
+        className: 'mt-2 flex min-h-0 flex-1 gap-2',
+        children: [
+          jsx('div', {
+            className: 'min-h-0 flex-1 overflow-auto rounded border border-(--ui-stroke-secondary) bg-(--ui-bg-tertiary) p-2',
+            children: jsx('canvas', {
+              ref: canvasRef,
+              className: 'mx-auto block h-auto max-h-full w-auto max-w-full cursor-move',
+              onPointerDown: event => {
+                const rect = event.currentTarget.getBoundingClientRect()
+                const scale = doc.width / rect.width
+                const px = (event.clientX - rect.left) * scale
+                const py = (event.clientY - rect.top) * scale
+                const hit = [...doc.layers].reverse().find(layer => {
+                  const height = layer.type === 'image' ? layer.height : layer.fontSize * 1.25 * 3
+                  return px >= layer.x && px <= layer.x + layer.width && py >= layer.y && py <= layer.y + height
+                })
+                if (!hit) {
+                  setSelected('')
+                  return
+                }
+                setSelected(hit.id)
+                dragRef.current = { layerId: hit.id, startX: event.clientX, startY: event.clientY, originX: hit.x, originY: hit.y }
+              }
+            })
+          }),
+          jsxs('div', {
+            className: 'flex w-[240px] shrink-0 flex-col gap-1 overflow-y-auto text-[0.625rem]',
+            children: [
+              jsx('div', {
+                className: 'flex flex-col gap-0.5',
+                children: doc.layers.map(layer =>
+                  jsxs('button', {
+                    className: cn('truncate rounded px-1 py-0.5 text-left', selected === layer.id ? 'bg-(--ui-bg-tertiary)' : 'hover:bg-(--ui-bg-tertiary)'),
+                    onClick: () => setSelected(layer.id),
+                    type: 'button',
+                    children: [layer.type === 'text' ? '文字' : 'Logo', '：', layer.type === 'text' ? layer.text.slice(0, 12) : layer.asset.name || layer.asset.id.slice(0, 6)]
+                  }, layer.id)
+                )
+              }),
+              current
+                ? jsxs('div', {
+                    className: 'flex flex-col gap-1 border-t border-(--ui-stroke-secondary) pt-1',
+                    children: [
+                      current.type === 'text'
+                        ? jsx(Textarea, {
+                            className: 'h-16 w-full resize-none text-[0.625rem]',
+                            value: current.text,
+                            onChange: event => patchLayer({ text: event.target.value })
+                          })
+                        : null,
+                      current.type === 'text'
+                        ? jsxs('div', {
+                            className: 'flex items-center gap-1',
+                            children: [
+                              jsx('input', { type: 'number', className: 'h-5 w-14 rounded border border-(--ui-stroke-secondary) bg-transparent px-1', value: current.fontSize, onChange: event => patchLayer({ fontSize: Number(event.target.value) || 8 }) }),
+                              jsx('input', { type: 'color', className: 'h-5 w-8', value: /^#[0-9a-f]{6}$/i.test(current.color) ? current.color : '#ffffff', onChange: event => patchLayer({ color: event.target.value }) }),
+                              jsx('select', { className: 'h-5 rounded border border-(--ui-stroke-secondary) bg-transparent', value: current.fontFamily, onChange: event => patchLayer({ fontFamily: event.target.value }), children: ['sans-serif', 'serif', 'monospace'].map(family => jsx('option', { value: family, children: family }, family)) }),
+                              jsx('select', { className: 'h-5 rounded border border-(--ui-stroke-secondary) bg-transparent', value: current.align, onChange: event => patchLayer({ align: event.target.value }), children: ['left', 'center', 'right'].map(align => jsx('option', { value: align, children: align }, align)) }),
+                              jsx('label', { className: 'flex items-center gap-0.5', children: [jsx('input', { type: 'checkbox', checked: current.bold, onChange: event => patchLayer({ bold: event.target.checked }) }), '粗'] })
+                            ]
+                          })
+                        : null,
+                      jsxs('div', {
+                        className: 'flex items-center gap-1',
+                        children: [
+                          jsx('span', { children: '宽' }),
+                          jsx('input', { type: 'number', className: 'h-5 w-14 rounded border border-(--ui-stroke-secondary) bg-transparent px-1', value: Math.round(current.width), onChange: event => patchLayer({ width: Number(event.target.value) || 8 }) }),
+                          current.type === 'image'
+                            ? jsxs('span', {
+                                className: 'flex items-center gap-1',
+                                children: [
+                                  '高',
+                                  jsx('input', { type: 'number', className: 'h-5 w-14 rounded border border-(--ui-stroke-secondary) bg-transparent px-1', value: Math.round(current.height), onChange: event => patchLayer({ height: Number(event.target.value) || 8 }) })
+                                ]
+                              })
+                            : null
+                        ]
+                      }),
+                      jsxs('div', {
+                        className: 'flex items-center gap-1',
+                        children: [
+                          jsx('span', { children: 'x' }),
+                          jsx('input', { type: 'number', className: 'h-5 w-14 rounded border border-(--ui-stroke-secondary) bg-transparent px-1', value: Math.round(current.x), onChange: event => patchLayer({ x: Number(event.target.value) || 0 }) }),
+                          jsx('span', { children: 'y' }),
+                          jsx('input', { type: 'number', className: 'h-5 w-14 rounded border border-(--ui-stroke-secondary) bg-transparent px-1', value: Math.round(current.y), onChange: event => patchLayer({ y: Number(event.target.value) || 0 }) })
+                        ]
+                      }),
+                      jsx(Button, { size: 'xs', variant: 'ghost', onClick: removeLayer, children: '删除这一层' })
+                    ]
+                  })
+                : jsx('div', { className: 'text-(--ui-text-quaternary)', children: '点画布上的元素或上面的列表来编辑' })
+            ]
+          })
+        ]
+      })
+    ]
+  })
+}
+
 function CanvasView() {
   const settings = useValue($settings)
   const [pages, setPages] = useState([])
@@ -1491,6 +1853,8 @@ function CanvasView() {
   const [busy, setBusy] = useState('')
   const [note, setNote] = useState('')
   const [error, setError] = useState('')
+  const [posterNode, setPosterNode] = useState('')
+  const [posterRecipe, setPosterRecipe] = useState(null)
   const dirtyRef = useRef(false)
   const revisionRef = useRef(0)
   const dragRef = useRef(null)
@@ -1555,6 +1919,49 @@ function CanvasView() {
       dirtyRef.current = true
       return next
     })
+  }
+
+  const openPoster = async node => {
+    const asset = node.metadata?.asset
+    if (!asset || !asset.id) {
+      setError('这个图片节点还没有素材，先上传或生成一张')
+      return
+    }
+    setError('')
+    if (node.metadata?.poster) {
+      setPosterRecipe(node.metadata.poster)
+      setPosterNode(node.id)
+      return
+    }
+    try {
+      const data = await api.rest(`/canvas/assets/${asset.id}/poster`)
+      setPosterRecipe(data.recipe)
+      setPosterNode(node.id)
+    } catch (readError) {
+      setError(errorText(readError))
+    }
+  }
+
+  const onPosterSaved = ({ asset, poster }) => {
+    const source = page.nodes.find(node => node.id === posterNode)
+    const nodeId = `n_${Math.random().toString(36).slice(2, 10)}`
+    update(current => {
+      current.nodes.push({
+        id: nodeId,
+        type: 'image',
+        title: '海报',
+        x: (source ? source.x : 0) + 300,
+        y: (source ? source.y : 0) + 300,
+        width: 260,
+        height: 260,
+        metadata: { asset, poster, status: 'success' }
+      })
+      if (source) current.connections.push({ id: `e_${source.id}_${nodeId}`, fromNodeId: source.id, toNodeId: nodeId })
+      return current
+    })
+    setPosterNode('')
+    setPosterRecipe(null)
+    setNote('海报已保存为新节点')
   }
 
   const createPage = async () => {
@@ -1819,7 +2226,7 @@ function CanvasView() {
   const nodeById = new Map(page.nodes.map(node => [node.id, node]))
 
   return jsxs('div', {
-    className: 'flex h-full min-h-0 flex-col',
+    className: 'relative flex h-full min-h-0 flex-col',
     children: [
       jsxs('div', {
         className: 'flex flex-wrap items-center gap-1 border-b border-(--ui-stroke-secondary) px-2 py-1',
@@ -1907,12 +2314,23 @@ function CanvasView() {
                               jsx('div', {
                                 className: 'flex items-center justify-between text-[0.625rem] text-(--ui-text-quaternary)',
                                 children: [
-                                  jsx('span', { children: node.metadata?.asset?.name || '' }),
-                                  jsx('button', {
-                                    className: 'hover:text-foreground',
-                                    onClick: () => uploadImageNode(node.id),
-                                    type: 'button',
-                                    children: '替换'
+                                  jsx('span', { className: 'truncate', children: node.metadata?.asset?.name || '' }),
+                                  jsxs('div', {
+                                    className: 'flex items-center gap-1',
+                                    children: [
+                                      jsx('button', {
+                                        className: 'hover:text-foreground',
+                                        onClick: () => openPoster(node),
+                                        type: 'button',
+                                        children: '海报编辑'
+                                      }),
+                                      jsx('button', {
+                                        className: 'hover:text-foreground',
+                                        onClick: () => uploadImageNode(node.id),
+                                        type: 'button',
+                                        children: '替换'
+                                      })
+                                    ]
                                   })
                                 ]
                               })
@@ -1984,7 +2402,18 @@ function CanvasView() {
             )
           })
         ]
-      })
+      }),
+      posterNode && posterRecipe
+        ? jsx(PosterEditor, {
+            asset: page.nodes.find(node => node.id === posterNode)?.metadata?.asset,
+            initialRecipe: posterRecipe,
+            onClose: () => {
+              setPosterNode('')
+              setPosterRecipe(null)
+            },
+            onSaved: onPosterSaved
+          })
+        : null
     ]
   })
 }

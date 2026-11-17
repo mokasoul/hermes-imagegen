@@ -23,6 +23,22 @@ jobs:
         run: |
           cp desktop/plugin.js /tmp/plugin-check.mjs
           node --check /tmp/plugin-check.mjs
+      - name: Panel stylesheet is up to date
+        run: |
+          python scripts/build_panel_css.py
+          git diff --exit-code desktop/panel.css
+          if grep -q "dsw-alias" desktop/panel.css; then
+            echo "panel.css still references DSH tokens" >&2
+            exit 1
+          fi
+          python - <<'PY'
+          import pathlib
+          text = pathlib.Path("desktop/panel.css").read_text()
+          assert text.count("{") == text.count("}"), "unbalanced braces in panel.css"
+          rules = [line for line in text.splitlines() if line.startswith(".")]
+          assert rules and all(line.startswith(".ig-root") for line in rules), "unscoped selector in panel.css"
+          print(f"panel.css ok: {len(rules)} scoped rules")
+          PY
       - name: Manifest sanity
         run: |
           python - <<'PY'

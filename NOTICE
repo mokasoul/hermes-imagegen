@@ -31,6 +31,16 @@ Hermes Desktop plugin platform.
   upstream canvas extras: sketch boards, vision layer splitting, brush masks,
   annotation edits, file nodes and canvas skills.
 
+## Vendored upstream stylesheet
+
+`design/panel.module.css` is a verbatim copy of the upstream panel stylesheet
+(`src/client/panel.module.css`, Apache-2.0, Copyright the dsh-imagegen
+authors). It is vendored — not rewritten — so `scripts/build_panel_css.py` can
+regenerate `desktop/panel.css` reproducibly in CI: the script only scopes every
+selector under `.ig-root`, maps the `--dsw-alias-*` tokens onto Hermes app
+tokens and prefixes keyframes. Re-run the script after replacing the vendored
+file; CI fails if the generated file drifts.
+
 ## Bundled prompt-template snapshots
 
 `dashboard/imagegen_backend/templates_data/` ships five case-list snapshots

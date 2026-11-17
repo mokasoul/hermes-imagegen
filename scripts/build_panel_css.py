@@ -73,7 +73,12 @@ def scope_selector(selector: str) -> str:
         return ".ig-root"
     if part.startswith(".ig-root"):
         return part
-    return f".ig-root {part}"
+    scoped = f".ig-root {part}"
+    # The plugin puts both classes on one element (`className="ig-root panel"`),
+    # so the upstream root class also needs a self-matching variant.
+    if part == ".panel":
+        scoped = f".ig-root{part}, {scoped}"
+    return scoped
 
 
 def transform(css: str) -> str:

@@ -79,6 +79,10 @@ const $draft = atom({
   prompt: ''
 })
 const $references = atom([])
+// PNG data URL of the edit mask: transparent = "change here", opaque = keep the
+// original. Same convention the OpenAI edits API uses (and the engine validates
+// that its pixel size matches the first reference image).
+const $mask = atom('')
 const $job = atom(null)
 const $error = atom('')
 const $busy = atom(false)
@@ -196,6 +200,7 @@ async function startJob() {
     $error.set('图生图需要至少一张参考图')
     return
   }
+  const mask = $mask.get()
   $error.set('')
   $busy.set(true)
   try {
@@ -207,7 +212,8 @@ async function startJob() {
       size: draft.size,
       quality: draft.quality,
       n: draft.n,
-      references: draft.mode === 'edit' ? references.map(reference => reference.dataUrl) : []
+      references: draft.mode === 'edit' ? references.map(reference => reference.dataUrl) : [],
+      mask: draft.mode === 'edit' ? mask : ''
     }
     const response = await api.rest('/jobs', { method: 'POST', body, timeoutMs: 30000 })
     $job.set(response.job)
@@ -376,8 +382,142 @@ function ResultPanel() {
 
 // ── reference images ───────────────────────────────────────────────────────
 
+function MaskPainter({ reference, initialMask, onClose, onDone }) {
+  const canvasRef = useRef(null)
+  const paintingRef = useRef(false)
+  const [brush, setBrush] = useState(48)
+  const [ready, setReady] = useState(false)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return undefined
+    let alive = true
+    const image = new Image()
+    image.onload = () => {
+      if (!alive) return
+      canvas.width = image.naturalWidth
+      canvas.height = image.naturalHeight
+      const ctx = canvas.getContext('2d', { willReadFrequently: true })
+      ctx.clearRect(0, 0, canvas.width, canvas.height)
+      // Opaque = keep the original, so a fresh mask edits nothing.
+      ctx.fillStyle = '#000000'
+      ctx.fillRect(0, 0, canvas.width, canvas.height)
+      if (initialMask) {
+        const maskImage = new Image()
+        maskImage.onload = () => {
+          if (!alive) return
+          ctx.clearRect(0, 0, canvas.width, canvas.height)
+          ctx.drawImage(maskImage, 0, 0, canvas.width, canvas.height)
+          setReady(true)
+        }
+        maskImage.onerror = () => setError('已有遮罩读取失败')
+        maskImage.src = initialMask
+        return
+      }
+      setReady(true)
+    }
+    image.onerror = () => setError('参考图读取失败')
+    image.src = reference.dataUrl
+    return () => {
+      alive = false
+    }
+  }, [reference, initialMask])
+
+  const paint = event => {
+    const canvas = canvasRef.current
+    if (!canvas || !ready) return
+    const rect = canvas.getBoundingClientRect()
+    const scaleX = canvas.width / rect.width
+    const scaleY = canvas.height / rect.height
+    const x = (event.clientX - rect.left) * scaleX
+    const y = (event.clientY - rect.top) * scaleY
+    const ctx = canvas.getContext('2d')
+    ctx.globalCompositeOperation = 'destination-out'
+    ctx.beginPath()
+    ctx.arc(x, y, Math.max(2, brush * scaleX), 0, Math.PI * 2)
+    ctx.fill()
+    ctx.globalCompositeOperation = 'source-over'
+  }
+
+  const clearAll = () => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const ctx = canvas.getContext('2d')
+    ctx.globalCompositeOperation = 'source-over'
+    ctx.fillStyle = '#000000'
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
+  }
+
+  const finish = () => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    onDone(canvas.toDataURL('image/png'))
+  }
+
+  return jsxs('div', {
+    className: 'fixed inset-0 z-50 flex flex-col gap-2 bg-(--ui-bg-primary)/95 p-3 text-xs',
+    children: [
+      jsxs('div', {
+        className: 'flex flex-wrap items-center gap-2',
+        children: [
+          jsx('span', { className: 'font-medium', children: '画遮罩：涂过的地方才会被改，其余保持原图' }),
+          jsx('span', { className: 'text-[0.625rem] text-(--ui-text-quaternary)', children: `尺寸 ${canvasRef.current ? canvasRef.current.width + '×' + canvasRef.current.height : '读取中'} · 必须与第一张参考图一致` }),
+          jsx('span', { className: 'flex-1' }),
+          jsx('span', { children: '笔刷' }),
+          jsx('input', {
+            type: 'range',
+            min: 8,
+            max: 200,
+            value: brush,
+            onChange: event => setBrush(Number(event.target.value))
+          }),
+          jsx(Button, { size: 'xs', variant: 'ghost', onClick: clearAll, children: '清除遮罩' }),
+          jsx(Button, { size: 'xs', onClick: finish, children: '完成' }),
+          jsx(Button, { size: 'xs', variant: 'ghost', onClick: onClose, children: '取消' })
+        ]
+      }),
+      error ? jsx('div', { className: 'text-[0.6875rem] text-(--ui-danger)', children: error }) : null,
+      jsx('div', {
+        className: 'relative min-h-0 flex-1 overflow-auto rounded border border-(--ui-stroke-secondary) p-2',
+        children: jsxs('div', {
+          className: 'relative mx-auto',
+          children: [
+            jsx('img', {
+              alt: '参考图',
+              className: 'block max-h-full w-auto max-w-full select-none',
+              draggable: false,
+              src: reference.dataUrl
+            }),
+            jsx('canvas', {
+              ref: canvasRef,
+              className: 'absolute inset-0 h-full w-full cursor-crosshair opacity-60',
+              onPointerDown: event => {
+                paintingRef.current = true
+                event.currentTarget.setPointerCapture(event.pointerId)
+                paint(event)
+              },
+              onPointerMove: event => {
+                if (paintingRef.current) paint(event)
+              },
+              onPointerUp: () => {
+                paintingRef.current = false
+              },
+              onPointerLeave: () => {
+                paintingRef.current = false
+              }
+            })
+          ]
+        })
+      })
+    ]
+  })
+}
+
 function ReferenceStrip() {
   const references = useValue($references)
+  const mask = useValue($mask)
+  const [painting, setPainting] = useState(false)
   const input = useRef(null)
 
   const add = async files => {
@@ -393,7 +533,28 @@ function ReferenceStrip() {
       jsxs('div', {
         className: 'flex items-center justify-between text-[0.6875rem] text-(--ui-text-tertiary)',
         children: [
-          jsx('span', { children: `参考图 ${references.length}/5` }),
+          jsxs('div', {
+            className: 'flex items-center gap-2',
+            children: [
+              jsx('span', { children: `参考图 ${references.length}/5` }),
+              references.length > 0
+                ? jsx('button', {
+                    className: 'hover:text-foreground',
+                    onClick: () => setPainting(true),
+                    type: 'button',
+                    children: mask ? '遮罩：已设置（点开可改）' : '画遮罩（只改涂过的地方）'
+                  })
+                : null,
+              mask
+                ? jsx('button', {
+                    className: 'hover:text-(--ui-danger)',
+                    onClick: () => $mask.set(''),
+                    type: 'button',
+                    children: '移除遮罩'
+                  })
+                : null
+            ]
+          }),
           jsx(Button, { size: 'xs', variant: 'ghost', onClick: () => input.current && input.current.click(), children: '添加图片' })
         ]
       }),
@@ -444,7 +605,19 @@ function ReferenceStrip() {
       jsx('div', {
         className: 'text-[0.625rem] text-(--ui-text-quaternary)',
         children: '支持拖拽、粘贴（在提示词框里 Ctrl/⌘+V）与多选；单张 ≤ 10MB'
-      })
+      }),
+      painting && references[0]
+        ? jsx(MaskPainter, {
+            initialMask: mask,
+            reference: references[0],
+            onClose: () => setPainting(false),
+            onDone: dataUrl => {
+              $mask.set(dataUrl)
+              setPainting(false)
+              haptic('tap')
+            }
+          })
+        : null
     ]
   })
 }
@@ -2663,10 +2836,202 @@ function EcommerceView() {
   })
 }
 
+// ── multi-model comparison ────────────────────────────────────────────────
+
+function CompareView() {
+  const draft = useValue($draft)
+  const settings = useValue($settings)
+  const references = useValue($references)
+  const mask = useValue($mask)
+  const channel = activeChannel(settings, draft.channelId)
+  const models = (channel && channel.models) || []
+  const [picked, setPicked] = useState([])
+  const [cards, setCards] = useState({})
+  const [running, setRunning] = useState(false)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    setPicked(current => current.filter(model => models.includes(model)))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [models.join('|')])
+
+  const toggle = model =>
+    setPicked(current => (current.includes(model) ? current.filter(entry => entry !== model) : [...current, model]))
+
+  const runOne = async model => {
+    const started = Date.now()
+    setCards(current => ({ ...current, [model]: { status: '生成中', images: [] } }))
+    try {
+      const body = {
+        channel_id: draft.channelId,
+        model,
+        mode: draft.mode,
+        prompt: draft.prompt,
+        size: draft.size,
+        quality: draft.quality,
+        n: 1,
+        references: draft.mode === 'edit' ? references.map(reference => reference.dataUrl) : [],
+        mask: draft.mode === 'edit' ? mask : ''
+      }
+      const submitted = await api.rest('/jobs', { method: 'POST', body, timeoutMs: 30000 })
+      const taskId = submitted.job.id
+      let job = null
+      for (let tick = 0; tick < 200; tick += 1) {
+        await new Promise(resolve => setTimeout(resolve, 1500))
+        const polled = await api.rest(`/jobs/${taskId}`)
+        job = polled.job
+        if (['succeeded', 'failed', 'cancelled', 'lost'].includes(job.status)) break
+      }
+      if (!job || job.status !== 'succeeded') {
+        setCards(current => ({
+          ...current,
+          [model]: { status: '失败', images: [], error: (job && (job.error || job.status)) || '超时', elapsed: Date.now() - started }
+        }))
+        return
+      }
+      const images = []
+      for (const image of job.images || []) {
+        const inline = await api.rest(`/files/${image.id}/inline`)
+        images.push({ id: image.id, dataUrl: inline.data_url })
+      }
+      setCards(current => ({ ...current, [model]: { status: '完成', images, elapsed: Date.now() - started, jobId: taskId } }))
+    } catch (runError) {
+      setCards(current => ({ ...current, [model]: { status: '失败', images: [], error: errorText(runError), elapsed: Date.now() - started } }))
+    }
+  }
+
+  const run = async () => {
+    if (!draft.channelId) {
+      setError('先在「工作室」里选一个渠道')
+      return
+    }
+    if (!draft.prompt.trim()) {
+      setError('提示词不能为空：在「工作室」里写好再来对比')
+      return
+    }
+    if (picked.length === 0) {
+      setError('至少勾选一个模型')
+      return
+    }
+    setError('')
+    setRunning(true)
+    await Promise.all(picked.map(model => runOne(model)))
+    setRunning(false)
+    haptic('success')
+  }
+
+  return jsxs('div', {
+    className: 'flex h-full min-h-0 flex-col gap-2 p-3 text-xs',
+    children: [
+      jsxs('div', {
+        className: 'flex flex-wrap items-center gap-2',
+        children: [
+          jsx('span', { className: 'font-medium', children: '同一提示词，投给多个模型' }),
+          jsx('span', { className: 'text-[0.625rem] text-(--ui-text-quaternary)', children: `渠道：${channel ? channel.name : '未选'} · 模式：${draft.mode === 'edit' ? '图生图' : '文生图'} · 比例 ${draft.size} · 清晰度 ${draft.quality}` }),
+          jsx('span', { className: 'flex-1' }),
+          jsx(Button, { size: 'xs', disabled: running || picked.length === 0, onClick: run, children: running ? '对比中…' : `对比生成（${picked.length}）` }),
+          jsx(Button, { size: 'xs', variant: 'ghost', onClick: () => setCards({}), children: '清空结果' })
+        ]
+      }),
+      jsx('div', {
+        className: 'min-h-0 shrink-0 overflow-y-auto rounded border border-(--ui-stroke-secondary) p-1.5',
+        children:
+          models.length === 0
+            ? jsx('div', { className: 'text-(--ui-text-quaternary)', children: '这个渠道还没有模型：去「工作室 → 渠道」点检测模型' })
+            : jsxs('div', {
+                className: 'flex flex-wrap gap-2',
+                children: models.map(model =>
+                  jsxs('label', {
+                    className: 'flex items-center gap-1',
+                    children: [
+                      jsx('input', { type: 'checkbox', checked: picked.includes(model), onChange: () => toggle(model) }),
+                      jsx('span', { children: model })
+                    ]
+                  }, model)
+                )
+              })
+      }),
+      error ? jsx('div', { className: 'text-[0.6875rem] text-(--ui-danger)', children: error }) : null,
+      jsx('div', {
+        className: 'min-h-0 flex-1 overflow-y-auto',
+        children:
+          picked.length === 0
+            ? jsx(EmptyState, {
+                className: 'flex-1',
+                title: '勾选要对比的模型',
+                description: '提示词、参考图、遮罩都沿用工作室里当前的内容；每个模型各出一张，可以单独重试。'
+              })
+            : jsx('div', {
+                className: 'grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-2',
+                children: picked.map(model => {
+                  const card = cards[model]
+                  return jsxs('div', {
+                    className: 'flex flex-col gap-1 rounded border border-(--ui-stroke-secondary) p-1.5',
+                    children: [
+                      jsxs('div', {
+                        className: 'flex items-center justify-between text-[0.625rem]',
+                        children: [
+                          jsx('span', { className: 'truncate font-medium', children: model }),
+                          jsx('span', {
+                            className: card && card.status === '失败' ? 'text-(--ui-danger)' : 'text-(--ui-text-quaternary)',
+                            children: card
+                              ? `${card.status}${card.elapsed ? ` · ${(card.elapsed / 1000).toFixed(1)}s` : ''}`
+                              : '待生成'
+                          })
+                        ]
+                      }),
+                      card && card.images.length
+                        ? jsx('img', { alt: model, className: 'w-full rounded object-contain', src: card.images[0].dataUrl })
+                        : jsx('div', {
+                            className: 'grid aspect-square w-full place-items-center rounded bg-(--ui-bg-tertiary) text-(--ui-text-quaternary)',
+                            children: card && card.status === '生成中' ? '生成中…' : card && card.error ? card.error : '—'
+                          }),
+                      jsxs('div', {
+                        className: 'flex items-center gap-1',
+                        children: [
+                          jsx(Button, {
+                            size: 'xs',
+                            variant: 'ghost',
+                            disabled: running,
+                            onClick: () => {
+                              setRunning(true)
+                              runOne(model).finally(() => setRunning(false))
+                            },
+                            children: '重试'
+                          }),
+                          card && card.images[0]
+                            ? jsx('a', {
+                                className: 'text-(--ui-accent) hover:underline',
+                                download: `${model}.png`,
+                                href: card.images[0].dataUrl,
+                                children: '下载'
+                              })
+                            : null,
+                          jsx(Button, {
+                            size: 'xs',
+                            variant: 'ghost',
+                            onClick: () => {
+                              patchDraft({ model })
+                              $view.set('studio')
+                            },
+                            children: '用它'
+                          })
+                        ]
+                      })
+                    ]
+                  }, model)
+                })
+              })
+      })
+    ]
+  })
+}
+
 // ── page ───────────────────────────────────────────────────────────────────
 
 const VIEWS = [
   { id: 'studio', label: '工作室' },
+  { id: 'compare', label: '对比' },
   { id: 'ecommerce', label: '套图' },
   { id: 'templates', label: '模板' },
   { id: 'canvas', label: '画布' },
@@ -2698,7 +3063,9 @@ function ImageGenPage() {
           ? jsx(CanvasView, {})
           : view === 'ecommerce'
             ? jsx(EcommerceView, {})
-            : view === 'history'
+            : view === 'compare'
+              ? jsx(CompareView, {})
+              : view === 'history'
               ? jsx(HistoryView, {})
               : jsx(StudioView, {})
 

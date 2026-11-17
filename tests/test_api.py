@@ -223,3 +223,53 @@ def test_detect_saves_models_when_asked(client, monkeypatch):
     )
     assert response.status_code == 200, response.text
     assert response.json()["channel"]["models"] == ["gpt-image-2"]
+
+
+def test_mask_flows_from_the_job_payload_into_the_engine(client, monkeypatch):
+    _add_channel(client)
+    captured = {}
+
+    async def generate(channel, request, references=None, mask=None, cancel=None, transport=None):
+        captured["mask"] = mask
+        return [image_engine.GeneratedImage(data=png_bytes(2, 2), mime="image/png")]
+
+    monkeypatch.setattr(image_engine, "generate", generate)
+    channel_id = client.get("/api/plugins/hermes-imagegen/settings").json()["channels"][0]["id"]
+    created = client.post(
+        "/api/plugins/hermes-imagegen/jobs",
+        json={
+            "channel_id": channel_id,
+            "model": "gpt-image-2",
+            "mode": "edit",
+            "prompt": "只把猫换成狗",
+            "references": [png_data_url(2, 2)],
+            "mask": png_data_url(2, 2),
+        },
+    )
+    assert created.status_code == 200, created.text
+    task_id = created.json()["job"]["id"]
+    for _ in range(60):
+        job = client.get(f"/api/plugins/hermes-imagegen/jobs/{task_id}").json()["job"]
+        if job["status"] in ("succeeded", "failed"):
+            break
+        time.sleep(0.05)
+    assert job["status"] == "succeeded", job
+    assert captured["mask"] == png_bytes(2, 2)
+
+
+def test_non_png_mask_is_refused(client):
+    _add_channel(client)
+    channel_id = client.get("/api/plugins/hermes-imagegen/settings").json()["channels"][0]["id"]
+    response = client.post(
+        "/api/plugins/hermes-imagegen/jobs",
+        json={
+            "channel_id": channel_id,
+            "model": "gpt-image-2",
+            "mode": "edit",
+            "prompt": "x",
+            "references": [png_data_url(2, 2)],
+            "mask": "data:image/jpeg;base64,AAAA",
+        },
+    )
+    assert response.status_code == 400
+    assert "遮罩必须为 PNG" in response.text

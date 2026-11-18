@@ -1,0 +1,351 @@
+/* DSH-faithful studio surface.
+ *
+ * Hand-written (not generated): the upstream panel.module.css describes the DSH
+ * shell, but the real studio screenshots put the parameter column on the LEFT
+ * (305px), results in the CENTRE and the history rail on the RIGHT (235px) —
+ * a three-column workbench, not the two-column split the stylesheet implies.
+ * Colours come from the app's --ui-* tokens so the surface follows the theme;
+ * the only non-token value is the inverted generate button, which is derived
+ * from --ui-text-primary so it stays black-on-white / white-on-black. */
+
+.ig-root.dsh {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 0;
+}
+
+.dshHead {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px 10px;
+  border-bottom: 1px solid var(--ui-stroke-secondary);
+}
+
+.dshHeadText {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.dshTitle {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--ui-text-primary);
+}
+
+.dshSub {
+  overflow: hidden;
+  font-size: 12px;
+  color: var(--ui-text-tertiary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dshHead .connectionStatus {
+  margin-left: auto;
+}
+
+.dshStudio {
+  display: grid;
+  flex: 1;
+  grid-template-columns: 305px minmax(0, 1fr) 235px;
+  min-height: 0;
+}
+
+.dshCol {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* ── left: parameters ───────────────────────────────────────────────────── */
+
+.dshConfig {
+  gap: 12px;
+  padding: 12px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  border-right: 1px solid var(--ui-stroke-secondary);
+}
+
+.dshConfig > * {
+  flex: none;
+}
+
+.dshField {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dshLabel {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ui-text-secondary);
+}
+
+.dshHint {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--ui-text-quaternary);
+}
+
+.dshChips {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.dshChip {
+  height: 28px;
+  padding: 0 6px;
+  overflow: hidden;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ui-text-secondary);
+  font: inherit;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.dshChip:hover:not(:disabled) {
+  background: var(--ui-bg-tertiary);
+  color: var(--ui-text-primary);
+}
+
+.dshChip[data-active] {
+  border-color: var(--ui-stroke-secondary);
+  background: var(--ui-bg-secondary);
+  color: var(--ui-text-primary);
+  font-weight: 500;
+}
+
+.dshChip:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.dshPromptBox {
+  position: relative;
+}
+
+.dshPrompt {
+  display: block;
+  width: 100%;
+  min-height: 128px;
+  padding: 10px 12px 22px;
+  border: 1px solid var(--ui-stroke-secondary);
+  border-radius: 10px;
+  outline: none;
+  background: var(--ui-bg-primary);
+  color: var(--ui-text-primary);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.6;
+  resize: vertical;
+}
+
+.dshPrompt:focus {
+  border-color: var(--ui-accent);
+}
+
+.dshPromptCount {
+  position: absolute;
+  right: 10px;
+  bottom: 6px;
+  font-size: 11px;
+  color: var(--ui-text-quaternary);
+  pointer-events: none;
+}
+
+.dshPromptTools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.dshTool {
+  padding: 3px 7px;
+  border: 1px solid var(--ui-stroke-secondary);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ui-text-secondary);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.dshTool:hover:not(:disabled) {
+  border-color: var(--ui-stroke-primary);
+  color: var(--ui-text-primary);
+}
+
+.dshTool:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* Inverted primary action: black on light, near-white on dark. */
+.dshGenerate {
+  width: 100%;
+  height: 36px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: var(--ui-text-primary);
+  color: var(--ui-bg-primary);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.dshGenerate:hover:not(:disabled) {
+  opacity: 0.88;
+}
+
+.dshGenerate:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.dshCancel {
+  width: 100%;
+  height: 30px;
+  margin-top: 6px;
+  border: 1px solid var(--ui-stroke-secondary);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ui-text-secondary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.dshError {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--ui-danger);
+  overflow-wrap: anywhere;
+}
+
+/* ── centre: results ────────────────────────────────────────────────────── */
+
+.dshCenter {
+  gap: 10px;
+  padding: 12px 16px;
+}
+
+.dshCenterHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--ui-text-tertiary);
+}
+
+.dshCenterBody {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+/* ── right: history rail ────────────────────────────────────────────────── */
+
+.dshRail {
+  gap: 8px;
+  padding: 12px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  border-left: 1px solid var(--ui-stroke-secondary);
+}
+
+.dshRailHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ui-text-primary);
+}
+
+.dshRailHead .dshTool {
+  margin-left: auto;
+}
+
+.dshRailItem {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  gap: 8px;
+  padding: 7px;
+  border: 1px solid var(--ui-stroke-secondary);
+  border-radius: 10px;
+  background: var(--ui-bg-primary);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.dshRailItem:hover {
+  border-color: var(--ui-stroke-primary);
+  background: var(--ui-bg-tertiary);
+}
+
+.dshRailThumb {
+  width: 48px;
+  height: 48px;
+  border-radius: 7px;
+  object-fit: cover;
+  background: var(--ui-bg-tertiary);
+}
+
+.dshRailThumbEmpty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 7px;
+  background: var(--ui-bg-tertiary);
+  color: var(--ui-text-quaternary);
+  font-size: 10px;
+}
+
+.dshRailText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.dshRailTitle {
+  overflow: hidden;
+  font-size: 12px;
+  color: var(--ui-text-primary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dshRailMeta {
+  overflow: hidden;
+  font-size: 11px;
+  color: var(--ui-text-quaternary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dshRailEmpty {
+  padding: 10px 2px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ui-text-quaternary);
+}

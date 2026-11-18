@@ -194,14 +194,16 @@
   cursor: default;
 }
 
-/* Inverted primary action: black on light, near-white on dark. */
+/* DSH's primary action is a near-black block with white text. It stays a fixed
+   pair (not token-derived) because --ui-bg-primary carries alpha and would make
+   the label translucent; in dark themes the stroke keeps the block readable. */
 .dshGenerate {
   width: 100%;
   height: 36px;
-  border: 1px solid transparent;
+  border: 1px solid var(--ui-stroke-primary);
   border-radius: 10px;
-  background: var(--ui-text-primary);
-  color: var(--ui-bg-primary);
+  background: #14161a;
+  color: #fff;
   font: inherit;
   font-size: 13px;
   font-weight: 600;

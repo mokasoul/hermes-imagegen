@@ -208,7 +208,7 @@ async def cancel_job(job_id: str) -> dict[str, Any]:
 async def ui_css() -> dict[str, Any]:
     """The plugin's stylesheets, concatenated in cascade order.
 
-    Two generated files: ``panel.css`` ports the upstream DSH panel stylesheet
+    Two generated files plus one hand-written: ``panel.css`` ports the upstream
     (every rule scoped under ``.ig-root``, themed with the app's ``--ui-*``
     tokens) and ``plugin-ui.css`` renders the utility vocabulary this plugin's
     own views use — a plugin's class strings never reach the app's Tailwind
@@ -219,7 +219,7 @@ async def ui_css() -> dict[str, Any]:
     """
     base = Path(__file__).resolve().parent.parent / "desktop"
     parts: list[str] = []
-    for name in ("panel.css", "plugin-ui.css"):
+    for name in ("panel.css", "plugin-ui.css", "plugin-dsh.css"):
         path = base / name
         if not path.is_file():
             raise HTTPException(

@@ -624,6 +624,113 @@ function ReferenceStrip() {
 
 // ── studio ─────────────────────────────────────────────────────────────────
 
+// ── DSH-faithful studio chrome ─────────────────────────────────────────────
+
+function DshChip({ active, children, disabled, onClick }) {
+  return jsx('button', {
+    className: 'dshChip',
+    disabled: Boolean(disabled),
+    onClick,
+    type: 'button',
+    ...(active ? { 'data-active': '' } : {}),
+    children
+  })
+}
+
+function DshChipGrid({ label, options, value, onSelect, hint }) {
+  return jsxs('div', {
+    className: 'dshField',
+    children: [
+      jsx('span', { className: 'dshLabel', children: label }),
+      jsx('div', {
+        className: 'dshChips',
+        children: options.map(option =>
+          jsx(
+            DshChip,
+            {
+              active: String(option.id) === String(value),
+              onClick: () => onSelect(option.id),
+              children: option.label
+            },
+            String(option.id)
+          )
+        )
+      }),
+      hint ? jsx('span', { className: 'dshHint', children: hint }) : null
+    ]
+  })
+}
+
+function StudioRailItem({ record, onOpen }) {
+  const first = (record.images && record.images[0]) || null
+  const query = useQuery({
+    queryKey: ['hermes-imagegen', 'image', first ? first.id : 'none'],
+    queryFn: () => api.rest(`/files/${first.id}/inline`),
+    enabled: Boolean(first),
+    staleTime: Infinity,
+    gcTime: 30 * 60 * 1000
+  })
+  const thumb = first && query.data && query.data.data_url
+    ? jsx('img', { alt: '', className: 'dshRailThumb', decoding: 'async', loading: 'lazy', src: query.data.data_url })
+    : jsx('div', { className: 'dshRailThumbEmpty', children: '—' })
+
+  return jsxs('button', {
+    className: 'dshRailItem',
+    onClick: () => onOpen(record),
+    type: 'button',
+    children: [
+      thumb,
+      jsxs('span', {
+        className: 'dshRailText',
+        children: [
+          jsx('span', { className: 'dshRailTitle', children: record.prompt || '无提示词' }),
+          jsx('span', {
+            className: 'dshRailMeta',
+            children: `${record.mode === 'edit' ? '图生图' : '文生图'} · ${formatStamp(record.created_at)}`
+          })
+        ]
+      })
+    ]
+  })
+}
+
+function StudioRail({ onOpen }) {
+  const query = useQuery({
+    queryKey: ['hermes-imagegen', 'history-rail'],
+    queryFn: () => api.rest('/history?limit=8&offset=0'),
+    staleTime: 5000
+  })
+  const records = (query.data && query.data.items) || []
+
+  return jsxs('aside', {
+    className: 'dshCol dshRail',
+    children: [
+      jsxs('div', {
+        className: 'dshRailHead',
+        children: [
+          jsx('span', { children: '历史记录' }),
+          jsx('button', {
+            className: 'dshTool',
+            onClick: () => query.refetch(),
+            type: 'button',
+            children: '刷新'
+          })
+        ]
+      }),
+      records.length === 0
+        ? jsx('div', {
+            className: 'dshRailEmpty',
+            children: query.isPending ? '读取中…' : '还没有记录。生成后会自动出现在这里。'
+          })
+        : records.map(record =>
+            jsx(StudioRailItem, { onOpen, record }, record.id)
+          )
+    ]
+  })
+}
+
+// ── studio ──────────────────────────────────────────────────────────────────
+
 function StudioView() {
   const settings = useValue($settings)
   const draft = useValue($draft)
@@ -705,221 +812,225 @@ function StudioView() {
     }
   }
 
-  return jsx('div', {
-    className: 'ig-root panel',
+  const ratioOptions = RATIOS.map(ratio => ({
+    id: ratio,
+    label: ratio === 'auto' ? '自动' : ratio
+  }))
+
+  return jsxs('div', {
+    className: 'ig-root panel dsh',
     children: [
       jsxs('header', {
-        className: 'panelHeader',
+        className: 'dshHead',
         children: [
-          jsx('span', {
-            className: 'panelHeading',
-            children: jsx('h2', { className: 'panelTitle', children: '生图' })
+          jsxs('div', {
+            className: 'dshHeadText',
+            children: [
+              jsx('h2', { className: 'dshTitle', children: 'AI 生图' }),
+              jsx('span', {
+                className: 'dshSub',
+                children: channel
+                  ? `${channel.name || channel.id}${draft.model ? ` · ${draft.model}` : ''}`
+                  : '还没有渠道，先去「渠道」页配置'
+              })
+            ]
           }),
-          jsx('span', {
-            className: 'panelHeaderActions',
-            children: jsx('span', {
-              className: 'connectionStatus',
-              'data-connected': 'true',
-              children: [jsx('span', { className: 'connectionDot' }), '就绪']
-            })
+          jsxs('span', {
+            className: 'connectionStatus',
+            'data-connected': 'true',
+            children: [jsx('span', { className: 'connectionDot' }), '已连接']
           })
         ]
       }),
-      jsx('div', {
-        className: 'studio',
+      jsxs('div', {
+        className: 'dshStudio',
         children: [
-          jsx('div', { className: 'generation', children: jsx(ResultPanel, {}) }),
+          // ── left: parameters (DSH puts this column first) ────────────────
           jsxs('div', {
-        className: 'config',
-        children: [jsxs('div', { className: 'configScroll', children: [
-          jsx(SegmentedControl, {
-            onChange: mode => patchDraft({ mode }),
-            options: MODES,
-            value: draft.mode
-          }),
-          jsxs('div', {
-            className: 'flex flex-col gap-1',
+            className: 'dshCol dshConfig',
             children: [
-              jsx('div', { className: 'text-[0.6875rem] text-(--ui-text-tertiary)', children: '渠道 / 模型' }),
-              jsx(Select, {
-                value: channel ? channel.id : '',
-                onValueChange: id => {
-                  const next = channels.find(item => item.id === id)
-                  patchDraft({ channelId: id, model: next ? next.default_model || (next.models || [])[0] || '' : '' })
-                },
+              jsx(SegmentedControl, {
+                onChange: mode => patchDraft({ mode }),
+                options: MODES,
+                value: draft.mode
+              }),
+              jsxs('div', {
+                className: 'dshPromptBox',
                 children: [
-                  jsx(SelectTrigger, { className: 'h-8 w-full text-xs', children: jsx(SelectValue, { placeholder: '选择渠道' }) }),
-                  jsx(SelectContent, {
-                    children: channels.map(item =>
-                      jsx(SelectItem, { value: item.id, children: item.name || item.id }, item.id)
-                    )
+                  jsx('textarea', {
+                    className: 'dshPrompt',
+                    maxLength: 2000,
+                    onChange: event => patchDraft({ prompt: event.target.value }),
+                    onPaste: event => {
+                      const files = Array.from(event.clipboardData?.files || [])
+                      if (files.length > 0 && draft.mode === 'edit') {
+                        event.preventDefault()
+                        addReferenceFiles(files, $references.get()).then(added => {
+                          if (added.length > 0) $references.set([...$references.get(), ...added])
+                        })
+                      }
+                    },
+                    placeholder: draft.mode === 'edit' ? '描述要怎么改这张图…' : '描述你想要的画面…',
+                    value: draft.prompt
+                  }),
+                  jsx('span', {
+                    className: 'dshPromptCount',
+                    children: `${draft.prompt.length}/2000`
                   })
                 ]
               }),
-              models.length > 0
-                ? jsx(Select, {
-                    value: draft.model,
-                    onValueChange: model => patchDraft({ model }),
+              jsxs('div', {
+                className: 'dshPromptTools',
+                children: [
+                  jsx(Select, {
+                    value: draft.promptModel || '__auto__',
+                    onValueChange: value => patchDraft({ promptModel: value === '__auto__' ? '' : value }),
                     children: [
-                      jsx(SelectTrigger, { className: 'h-8 w-full text-xs', children: jsx(SelectValue, { placeholder: '选择模型' }) }),
+                      jsx(SelectTrigger, { className: 'h-7 w-[120px] text-[0.6875rem]', children: jsx(SelectValue, { placeholder: '提示词模型' }) }),
                       jsx(SelectContent, {
-                        children: models.map(model => jsx(SelectItem, { value: model, children: model }, model))
+                        children: [
+                          jsx(SelectItem, { value: '__auto__', children: '自动' }),
+                          ...promptModels.map(model => jsx(SelectItem, { value: model, children: model }, model))
+                        ]
                       })
                     ]
-                  })
-                : jsxs('div', {
-                    className: 'flex items-center gap-2 text-[0.6875rem] text-(--ui-text-tertiary)',
-                    children: [
-                      jsx('span', { children: channel ? '这个渠道还没有模型：' : '先选一个渠道' }),
-                      channel
-                        ? jsx('button', {
-                            className: 'text-(--ui-accent) hover:underline',
-                            disabled: detecting,
-                            onClick: detectModels,
-                            type: 'button',
-                            children: detecting ? '检测中…' : '点这里检测模型'
-                          })
-                        : null
-                    ]
-                  })
-            ]
-          }),
-          jsx(Textarea, {
-            className: 'min-h-[104px] text-xs',
-            placeholder: draft.mode === 'edit' ? '描述要怎么改这张图…' : '描述你想要的画面…',
-            value: draft.prompt,
-            onChange: event => patchDraft({ prompt: event.target.value }),
-            onPaste: event => {
-              const files = Array.from(event.clipboardData?.files || [])
-              if (files.length > 0 && draft.mode === 'edit') {
-                event.preventDefault()
-                addReferenceFiles(files, $references.get()).then(added => {
-                  if (added.length > 0) $references.set([...$references.get(), ...added])
-                })
-              }
-            }
-          }),
-          jsxs('div', {
-            className: 'flex items-center justify-between text-[0.625rem] text-(--ui-text-quaternary)',
-            children: [
-              jsx('span', { children: `${draft.prompt.length} 字` }),
-              jsxs('div', {
-                className: 'flex items-center gap-2',
-                children: [
-                  jsx('button', {
-                    className: 'hover:text-foreground',
-                    onClick: () => $view.set('templates'),
-                    type: 'button',
-                    children: '从模板库挑'
                   }),
-                  jsx('button', {
-                    className: 'hover:text-foreground',
-                    onClick: () => patchDraft({ prompt: '' }),
-                    type: 'button',
-                    children: '清空提示词'
-                  })
-                ]
-              })
-            ]
-          }),
-          draft.mode === 'edit' ? jsx(ReferenceStrip, {}) : null,
-          jsxs('div', {
-            className: 'flex flex-wrap items-center gap-1',
-            children: [
-              jsx(Select, {
-                value: draft.promptModel || '__auto__',
-                onValueChange: value => patchDraft({ promptModel: value === '__auto__' ? '' : value }),
-                children: [
-                  jsx(SelectTrigger, { className: 'h-7 w-[132px] text-[0.6875rem]', children: jsx(SelectValue, { placeholder: '提示词模型' }) }),
-                  jsx(SelectContent, {
-                    children: [
-                      jsx(SelectItem, { value: '__auto__', children: '自动选文本模型' }),
-                      ...promptModels.map(model => jsx(SelectItem, { value: model, children: model }, model))
-                    ]
-                  })
-                ]
-              }),
-              jsx(Tip, {
-                label: '用渠道里的文本模型把上面的提示词扩写得更具体（温度 0.7）',
-                children: jsx(Button, {
-                  size: 'xs',
-                  variant: 'outline',
-                  disabled: Boolean(promptBusy),
-                  onClick: () => promptAction('enhance'),
-                  children: promptBusy === 'enhance' ? '增强中…' : '增强'
-                })
-              }),
-              jsx(Tip, {
-                label: '保持用途与事实不变，润色措辞、补视觉细节（温度 0.35）',
-                children: jsx(Button, {
-                  size: 'xs',
-                  variant: 'outline',
-                  disabled: Boolean(promptBusy),
-                  onClick: () => promptAction('polish'),
-                  children: promptBusy === 'polish' ? '润色中…' : '润色'
-                })
-              }),
-              jsx(Tip, {
-                label: '读参考图反推一段能复现它的提示词（需要至少一张参考图）',
-                children: jsx(Button, {
-                  size: 'xs',
-                  variant: 'outline',
-                  disabled: Boolean(promptBusy) || references.length === 0,
-                  onClick: () => promptAction('reverse'),
-                  children: promptBusy === 'reverse' ? '反推中…' : '从参考图反推'
-                })
-              })
-            ]
-          }),
-          promptError ? jsx('div', { className: 'text-[0.625rem] break-words text-(--ui-danger)', children: promptError }) : null,
-          jsxs('div', {
-            className: 'flex flex-col gap-1',
-            children: [
-              jsx('div', { className: 'text-[0.6875rem] text-(--ui-text-tertiary)', children: '比例' }),
-              jsx(Select, {
-                value: draft.size,
-                onValueChange: size => patchDraft({ size }),
-                children: [
-                  jsx(SelectTrigger, { className: 'h-8 w-full text-xs', children: jsx(SelectValue, {}) }),
-                  jsx(SelectContent, {
-                    children: RATIOS.map(ratio =>
-                      jsx(SelectItem, { value: ratio, children: ratio === 'auto' ? '自动（由上游决定）' : ratio }, ratio)
-                    )
+                  jsx(Tip, {
+                    label: '用渠道里的文本模型把提示词扩写得更具体（温度 0.7）',
+                    children: jsx('button', {
+                      className: 'dshTool',
+                      disabled: Boolean(promptBusy),
+                      onClick: () => promptAction('enhance'),
+                      type: 'button',
+                      children: promptBusy === 'enhance' ? '增强中…' : '增强'
+                    })
+                  }),
+                  jsx(Tip, {
+                    label: '保持用途与事实不变，润色措辞、补视觉细节（温度 0.35）',
+                    children: jsx('button', {
+                      className: 'dshTool',
+                      disabled: Boolean(promptBusy),
+                      onClick: () => promptAction('polish'),
+                      type: 'button',
+                      children: promptBusy === 'polish' ? '润色中…' : '润色'
+                    })
+                  }),
+                  jsx(Tip, {
+                    label: '读参考图反推一段能复现它的提示词（需要至少一张参考图）',
+                    children: jsx('button', {
+                      className: 'dshTool',
+                      disabled: Boolean(promptBusy) || references.length === 0,
+                      onClick: () => promptAction('reverse'),
+                      type: 'button',
+                      children: promptBusy === 'reverse' ? '反推中…' : '反推'
+                    })
                   })
                 ]
               }),
-              jsx('div', { className: 'text-[0.6875rem] text-(--ui-text-tertiary)', children: '清晰度' }),
-              jsx(SegmentedControl, {
-                onChange: quality => patchDraft({ quality }),
+              promptError ? jsx('div', { className: 'dshError', children: promptError }) : null,
+              draft.mode === 'edit' ? jsx(ReferenceStrip, {}) : null,
+              jsx(DshChipGrid, {
+                label: '尺寸',
+                onSelect: size => patchDraft({ size }),
+                options: ratioOptions,
+                value: draft.size
+              }),
+              jsx(DshChipGrid, {
+                label: '清晰度',
+                onSelect: quality => patchDraft({ quality }),
                 options: QUALITIES,
                 value: draft.quality
               }),
-              jsx('div', { className: 'text-[0.6875rem] text-(--ui-text-tertiary)', children: '数量' }),
-              jsx(SegmentedControl, {
-                onChange: value => patchDraft({ n: Number(value) }),
+              jsx(DshChipGrid, {
+                label: '生成数量',
+                onSelect: value => patchDraft({ n: Number(value) }),
                 options: COUNTS,
-                sizing: 'content',
                 value: String(draft.n)
-              })
-            ]
-          }),
-          jsx(Separator, {}),
-          jsxs('div', {
-            className: 'flex items-center gap-1.5',
-            children: [
-              jsx(Button, {
-                className: 'flex-1',
-                disabled: running,
+              }),
+              jsxs('div', {
+                className: 'dshField',
+                children: [
+                  jsx('span', { className: 'dshLabel', children: '模型' }),
+                  jsx(Select, {
+                    value: channel ? channel.id : '',
+                    onValueChange: id => {
+                      const next = channels.find(item => item.id === id)
+                      patchDraft({ channelId: id, model: next ? next.default_model || (next.models || [])[0] || '' : '' })
+                    },
+                    children: [
+                      jsx(SelectTrigger, { className: 'h-9 w-full text-xs', children: jsx(SelectValue, { placeholder: '选择渠道' }) }),
+                      jsx(SelectContent, {
+                        children: channels.map(item =>
+                          jsx(SelectItem, { value: item.id, children: item.name || item.id }, item.id)
+                        )
+                      })
+                    ]
+                  }),
+                  models.length > 0
+                    ? jsx(Select, {
+                        value: draft.model,
+                        onValueChange: model => patchDraft({ model }),
+                        children: [
+                          jsx(SelectTrigger, { className: 'h-9 w-full text-xs', children: jsx(SelectValue, { placeholder: '选择模型' }) }),
+                          jsx(SelectContent, {
+                            children: models.map(model => jsx(SelectItem, { value: model, children: model }, model))
+                          })
+                        ]
+                      })
+                    : jsxs('span', {
+                        className: 'dshHint',
+                        children: [
+                          channel ? '这个渠道还没有模型：' : '先选一个渠道',
+                          channel
+                            ? jsx('button', {
+                                className: 'dshTool',
+                                disabled: detecting,
+                                onClick: detectModels,
+                                type: 'button',
+                                children: detecting ? '检测中…' : '检测模型'
+                              })
+                            : null
+                        ]
+                      })
+                ]
+              }),
+              error ? jsx('div', { className: 'dshError', children: error }) : null,
+              jsx('button', {
+                className: 'dshGenerate',
+                disabled: running || !draft.prompt.trim(),
                 onClick: startJob,
-                size: 'sm',
+                type: 'button',
                 children: running ? '生成中…' : '开始生成'
               }),
-              running ? jsx(Button, { onClick: cancelJob, size: 'sm', variant: 'outline', children: '取消' }) : null
+              running
+                ? jsx('button', { className: 'dshCancel', onClick: cancelJob, type: 'button', children: '取消' })
+                : null
             ]
           }),
-          error ? jsx('div', { className: 'text-[0.6875rem] break-words text-(--ui-danger)', children: error }) : null
-        ] })]
-      }),
+
+          // ── centre: results ─────────────────────────────────────────────
+          jsxs('div', {
+            className: 'dshCol dshCenter',
+            children: [
+              jsxs('div', {
+                className: 'dshCenterHead',
+                children: [
+                  jsx('span', {
+                    children: running ? '正在生成…' : `本次生成 ${(job && job.images && job.images.length) || 0} 张`
+                  })
+                ]
+              }),
+              jsx('div', { className: 'dshCenterBody', children: jsx(ResultPanel, {}) })
+            ]
+          }),
+
+          // ── right: history rail ─────────────────────────────────────────
+          jsx(StudioRail, {
+            onOpen: record => {
+              loadRecordIntoStudio(record)
+              haptic('tap')
+            }
+          })
         ]
       })
     ]

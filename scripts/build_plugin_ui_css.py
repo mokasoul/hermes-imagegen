@@ -27,6 +27,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 PLUGIN = ROOT / "desktop" / "plugin.js"
 UPSTREAM_CSS = ROOT / "desktop" / "panel.css"
+# Hand-written sheet that owns the DSH studio surface; its class names count as
+# defined so the coverage gate does not report them as dead strings.
+HANDWRITTEN_CSS = ROOT / "desktop" / "plugin-dsh.css"
 OUT = ROOT / "desktop" / "plugin-ui.css"
 
 SPACE = 4  # Tailwind spacing scale unit, in px
@@ -259,6 +262,8 @@ def main() -> int:
     source = PLUGIN.read_text(encoding="utf-8")
     tokens = used_tokens(source)
     upstream_css = UPSTREAM_CSS.read_text(encoding="utf-8") if UPSTREAM_CSS.exists() else ""
+    if HANDWRITTEN_CSS.exists():
+        upstream_css += HANDWRITTEN_CSS.read_text(encoding="utf-8")
 
     rules: list[str] = []
     unknown: list[str] = []

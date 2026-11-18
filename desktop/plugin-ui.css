@@ -75,10 +75,6 @@
   border-top: 1px solid var(--ui-stroke-secondary);
 }
 
-.ig-root .break-words {
-  overflow-wrap: anywhere;
-}
-
 .ig-root .col-span-full {
   grid-column: 1 / -1;
 }
@@ -199,6 +195,10 @@
   height: 32px;
 }
 
+.ig-root .h-9 {
+  height: 36px;
+}
+
 .ig-root .h-auto {
   height: auto;
 }
@@ -269,10 +269,6 @@
 
 .ig-root .min-h-0 {
   min-height: 0;
-}
-
-.ig-root .min-h-\[104px\] {
-  min-height: 104px;
 }
 
 .ig-root .min-w-0 {
@@ -495,8 +491,8 @@
   width: 32px;
 }
 
-.ig-root .w-\[132px\] {
-  width: 132px;
+.ig-root .w-\[120px\] {
+  width: 120px;
 }
 
 .ig-root .w-\[180px\] {

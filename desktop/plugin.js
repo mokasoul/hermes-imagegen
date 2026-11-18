@@ -1650,7 +1650,10 @@ function HistoryView() {
             title: favoriteOnly ? '没有收藏' : '图库还是空的'
           })
         : jsxs('div', {
-            className: 'min-h-0 flex-1 overflow-y-auto pr-1',
+            // The masonry is `height: 0; flex: 1 1 auto` in the upstream sheet —
+            // it must live in a flex column or it collapses to zero height and
+            // clips the cards. The masonry owns the scrolling, not this wrapper.
+            className: 'flex min-h-0 flex-1 flex-col pr-1',
             children: [
               jsx('div', {
                 className: 'galleryMasonry',

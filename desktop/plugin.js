@@ -38,7 +38,7 @@ import {
   useQueryClient,
   useValue
 } from '@hermes/plugin-sdk'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
 const ID = 'hermes-imagegen'
@@ -279,106 +279,618 @@ function ImageView({ image, className, onOpen }) {
   })
 }
 
-function ResultCard({ image, index, job, onReuse }) {
-  const queryClient = useQueryClient()
-  const [downloading, setDownloading] = useState(false)
-  const download = useCallback(async () => {
-    setDownloading(true)
-    try {
-      const data = queryClient.getQueryData(['hermes-imagegen', 'image', image.id]) || (await api.rest(`/files/${image.id}/inline`))
-      const extension = (data.mime || 'image/png').split('/')[1] || 'png'
-      const anchor = document.createElement('a')
-      anchor.href = data.data_url
-      anchor.download = `imagegen-${job?.id || 'image'}-${index + 1}.${extension}`
-      anchor.click()
-    } catch (error) {
-      host.notify({ kind: 'error', message: `下载失败：${errorText(error)}` })
-    } finally {
-      setDownloading(false)
-    }
-  }, [image.id, index, job, queryClient])
+// ── result board ───────────────────────────────────────────────────────────
+//
+// A photo sheet, not a scrolling list: it fills the panel and the row split is
+// a fixed table (1 fills, 2 split left/right, 3 as two-over-one, 4 as 2×2 …), so
+// the same count always looks the same. Every picture keeps its whole frame
+// (contain, never cropped). Actions live in the right-click menu — also
+// reachable from the card's "…" button — plus a download button in the picture
+// corner; no card grows a button row that competes with the image.
+//
+// Ported from the upstream DSH studio-results surface (dickpy/dsh-imagegen,
+// Apache-2.0); the layout table is `result-layout.ts`, copied verbatim.
 
+/** Row plan for the result sheet. Ported verbatim from `result-layout.ts`. */
+function planResultLayout(count) {
+  const total = Math.max(0, Math.trunc(count || 0))
+  if (total === 0) return { rows: [], scroll: false }
+  if (total === 1) return { rows: [[0]], scroll: false }
+  if (total === 2) return { rows: [[0, 1]], scroll: false }
+  if (total === 3) return { rows: [[0, 1], [2]], scroll: false }
+  if (total === 4) return { rows: [[0, 1], [2, 3]], scroll: false }
+  if (total === 5) return { rows: [[0, 1, 2], [3, 4]], scroll: false }
+  if (total === 6) return { rows: [[0, 1, 2], [3, 4, 5]], scroll: false }
+  const rows = []
+  for (let start = 0; start < total; start += 3) {
+    rows.push([start, start + 1, start + 2].filter(index => index < total))
+  }
+  return { rows, scroll: true }
+}
+
+// A fixed, bounded SVG field: CSS drives the wave (no timers, no re-render).
+const LOADING_DOTS = []
+for (let row = 0; row < 25; row += 1) {
+  for (let column = 0; column < 19; column += 1) {
+    const distance = Math.hypot((column - 8) / 12, (row - 10) / 16)
+    LOADING_DOTS.push({
+      x: 10 + column * 20,
+      y: 10 + row * 20,
+      radius: 1.3 + 3.7 * Math.max(0, 1 - distance),
+      delay: `${(-column * 0.13 - row * 0.09).toFixed(2)}s`
+    })
+  }
+}
+// In-card waiting uses the same wave at half density.
+const LOADING_DOTS_COMPACT = LOADING_DOTS.filter(
+  (dot, index) => (index % 19) % 2 === 0 && Math.floor(index / 19) % 2 === 0
+)
+
+function GenerationLoading({ title, hint, compact }) {
+  const dots = compact ? LOADING_DOTS_COMPACT : LOADING_DOTS
   return jsxs('div', {
-    className: 'flex flex-col gap-1.5',
+    className: 'ig-loading field',
+    'data-compact': compact ? '' : undefined,
+    'data-generation-animation': '',
     children: [
-      jsx(ImageView, { image, className: 'cursor-zoom-in', onOpen: url => url && window.open(url, '_blank') }),
+      jsx('svg', {
+        'aria-hidden': 'true',
+        className: 'dots',
+        focusable: 'false',
+        viewBox: '0 0 380 500',
+        children: dots.map((dot, index) =>
+          jsx('circle', { className: 'dot', cx: dot.x, cy: dot.y, r: dot.radius, style: { animationDelay: dot.delay } }, index)
+        )
+      }),
       jsxs('div', {
-        className: 'flex items-center gap-1 text-[0.6875rem] text-(--ui-text-tertiary)',
+        className: 'badge',
         children: [
-          jsx('span', { children: `#${index + 1}` }),
-          typeof image.size_bytes === 'number' ? jsx('span', { children: `· ${Math.max(1, Math.round(image.size_bytes / 1024))} KB` }) : null,
-          jsx('span', { className: 'flex-1' }),
-          jsx(Button, {
-            size: 'xs',
-            variant: 'ghost',
-            disabled: downloading,
-            onClick: download,
-            children: downloading ? '保存中…' : '下载'
-          }),
-          jsx(Button, { size: 'xs', variant: 'ghost', onClick: onReuse, children: '复用' })
+          jsx('span', { className: 'title', children: title }),
+          jsx('span', { className: 'hint', children: hint })
         ]
       })
     ]
   })
 }
 
-function ResultPanel() {
+/** One clock for the whole board, so pending cards count up together. */
+function useBoardClock(active) {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!active) return undefined
+    const timer = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [active])
+  return now
+}
+
+/** Full-frame viewer: arrows page through this run, Escape closes. */
+function BoardLightbox({ images, index, onChange, onClose }) {
+  const current = images[index] || ''
+  useEffect(() => {
+    const onKey = event => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        onClose()
+        return
+      }
+      if (images.length < 2) return
+      if (event.key === 'ArrowLeft') {
+        event.preventDefault()
+        onChange((index - 1 + images.length) % images.length)
+      }
+      if (event.key === 'ArrowRight') {
+        event.preventDefault()
+        onChange((index + 1) % images.length)
+      }
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [images.length, index, onChange, onClose])
+
+  return jsxs('div', {
+    className: 'ig-lightbox',
+    onMouseDown: onClose,
+    children: [
+      jsx('img', { alt: '', draggable: false, src: current, onMouseDown: event => event.stopPropagation() }),
+      images.length > 1
+        ? jsxs('span', {
+            className: 'ig-lightboxCount',
+            children: [`${index + 1} / ${images.length}`, ' ←/→ 切换 · Esc 关闭']
+          })
+        : null
+    ]
+  })
+}
+
+/** The one menu every generated image opens (right-click or "…"). */
+function ImageActionMenu({ x, y, groups, label, onClose }) {
+  const menuRef = useRef(null)
+  const [position, setPosition] = useState({ left: x, top: y })
+
+  useLayoutEffect(() => {
+    const element = menuRef.current
+    if (!element) return
+    const rect = element.getBoundingClientRect()
+    setPosition({
+      left: Math.max(8, Math.min(x, window.innerWidth - rect.width - 8)),
+      top: Math.max(8, Math.min(y, window.innerHeight - rect.height - 8))
+    })
+  }, [x, y])
+
+  useEffect(() => {
+    const onKey = event => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      event.stopPropagation()
+      onClose()
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [onClose])
+
+  const move = direction => {
+    const element = menuRef.current
+    if (!element) return
+    const items = Array.from(element.querySelectorAll('[role="menuitem"]:not(:disabled)'))
+    if (items.length === 0) return
+    const current = items.indexOf(document.activeElement)
+    const next = current < 0 ? 0 : (current + direction + items.length) % items.length
+    items[next].focus()
+  }
+
+  const visible = groups.filter(group => group && group.length > 0)
+
+  return jsx('div', {
+    className: 'ig-menu overlay',
+    onMouseDown: onClose,
+    onContextMenu: event => {
+      event.preventDefault()
+      onClose()
+    },
+    children: jsx('div', {
+      ref: menuRef,
+      className: 'menu',
+      role: 'menu',
+      'aria-label': label,
+      'data-image-action-menu': '',
+      style: { left: position.left, top: position.top },
+      onMouseDown: event => event.stopPropagation(),
+      onKeyDown: event => {
+        if (event.key === 'ArrowDown') {
+          event.preventDefault()
+          move(1)
+        }
+        if (event.key === 'ArrowUp') {
+          event.preventDefault()
+          move(-1)
+        }
+      },
+      children: visible.map((group, groupIndex) =>
+        jsxs('div', {
+          className: 'group',
+          role: 'group',
+          children: [
+            groupIndex > 0 ? jsx('span', { className: 'separator', 'aria-hidden': 'true' }) : null,
+            ...group.map((action, index) =>
+              jsx('button', {
+                autoFocus: groupIndex === 0 && index === 0,
+                className: 'item',
+                'data-menu-action': action.id,
+                disabled: Boolean(action.disabled),
+                onClick: () => {
+                  onClose()
+                  void action.onSelect()
+                },
+                role: 'menuitem',
+                type: 'button',
+                children: action.label
+              }, action.id)
+            )
+          ]
+        }, groupIndex)
+      )
+    })
+  })
+}
+
+/** Fetches every finished image of the job once and keeps the data URLs. */
+function useBoardImages(job) {
+  const queryClient = useQueryClient()
+  const ids = ((job && job.images) || []).map(image => image.id)
+  const key = ids.join(',')
+  const [urls, setUrls] = useState({})
+
+  useEffect(() => {
+    if (!key) return undefined
+    let alive = true
+    Promise.all(
+      ids.map(id =>
+        queryClient
+          .fetchQuery({
+            queryKey: ['hermes-imagegen', 'image', id],
+            queryFn: () => api.rest(`/files/${id}/inline`),
+            staleTime: Infinity,
+            gcTime: 30 * 60 * 1000
+          })
+          .then(data => [id, (data && data.data_url) || ''])
+          .catch(() => [id, ''])
+      )
+    ).then(pairs => {
+      if (alive) setUrls(Object.fromEntries(pairs))
+    })
+    return () => {
+      alive = false
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, queryClient])
+
+  return urls
+}
+
+function saveDataUrl(dataUrl, filename) {
+  const anchor = document.createElement('a')
+  anchor.href = dataUrl
+  anchor.download = filename
+  anchor.click()
+}
+
+function ResultBoardCard({ card, urls, onPreview, onMenu, onRetry }) {
+  const { image, index, status, channel, model, elapsed, liveSeconds, waiting, failed } = card
+  const dataUrl = image ? urls[image.id] || '' : ''
+  const available = Boolean(image)
+  const [dimensions, setDimensions] = useState(null)
+
+  useEffect(() => {
+    if (!dataUrl || image.width || !image.height) return undefined
+    let alive = true
+    const probe = new Image()
+    probe.onload = () => {
+      if (alive) setDimensions({ width: probe.naturalWidth, height: probe.naturalHeight })
+    }
+    probe.src = dataUrl
+    return () => {
+      alive = false
+    }
+  }, [dataUrl, image])
+
+  const size = image && image.width && image.height
+    ? `${image.width} × ${image.height}`
+    : dimensions
+      ? `${dimensions.width} × ${dimensions.height}`
+      : ''
+
+  return jsxs('figure', {
+    className: 'card',
+    'data-result-card': '',
+    'data-task-status': status,
+    children: [
+      jsxs('div', {
+        className: 'media',
+        'data-empty': available ? undefined : '',
+        'data-failed': failed ? '' : undefined,
+        children: [
+          available && dataUrl
+            ? jsx('button', {
+                className: 'imageButton',
+                onClick: () => onPreview(index),
+                onContextMenu: event => {
+                  event.preventDefault()
+                  event.stopPropagation()
+                  onMenu(event.clientX, event.clientY, index)
+                },
+                title: '查看大图',
+                type: 'button',
+                children: jsx('img', { alt: model || `结果 ${index + 1}`, draggable: false, src: dataUrl })
+              })
+            : available
+              ? jsx('div', { className: 'pending', children: jsx(GlyphSpinner, {}) })
+              : null,
+          available && dataUrl
+            ? jsxs('div', {
+                className: 'mediaCorner',
+                children: [
+                  jsx('button', {
+                    'aria-label': '下载',
+                    className: 'cardDownload',
+                    onClick: event => {
+                      event.stopPropagation()
+                      saveDataUrl(dataUrl, `imagegen-${image.id}.png`)
+                    },
+                    title: '下载',
+                    type: 'button',
+                    children: jsx('svg', {
+                      'aria-hidden': 'true',
+                      fill: 'none',
+                      height: 14,
+                      stroke: 'currentColor',
+                      strokeLinecap: 'round',
+                      strokeLinejoin: 'round',
+                      strokeWidth: 1.6,
+                      viewBox: '0 0 16 16',
+                      width: 14,
+                      children: [
+                        jsx('path', { d: 'M8 3v6.5' }),
+                        jsx('path', { d: 'M5.2 7.2 8 10l2.8-2.8' }),
+                        jsx('path', { d: 'M3.4 12.6h9.2' })
+                      ]
+                    })
+                  }),
+                  elapsed ? jsx('span', { className: 'generationDuration', 'data-generation-duration': '', children: elapsed }) : null
+                ]
+              })
+            : null,
+          available && dataUrl
+            ? jsx('button', {
+                'aria-label': '更多操作',
+                className: 'moreButton',
+                onClick: event => {
+                  const rect = event.currentTarget.getBoundingClientRect()
+                  onMenu(rect.right - 6, rect.bottom + 4, index)
+                },
+                title: '更多操作',
+                type: 'button',
+                children: jsx('svg', {
+                  'aria-hidden': 'true',
+                  fill: 'currentColor',
+                  height: 15,
+                  viewBox: '0 0 16 16',
+                  width: 15,
+                  children: [
+                    jsx('circle', { cx: 8, cy: 3.4, r: 1.3 }),
+                    jsx('circle', { cx: 8, cy: 8, r: 1.3 }),
+                    jsx('circle', { cx: 8, cy: 12.6, r: 1.3 })
+                  ]
+                })
+              })
+            : null,
+          waiting
+            ? jsx('div', {
+                className: 'pending',
+                children: jsx(GenerationLoading, {
+                  compact: true,
+                  hint: `已用时 ${liveSeconds} 秒`,
+                  title: status === 'queued' ? '排队中' : '生成中'
+                })
+              })
+            : null,
+          failed
+            ? jsxs('div', {
+                className: 'error',
+                role: 'status',
+                children: [
+                  jsx('strong', { children: status === 'cancelled' ? '已取消' : '生成失败' }),
+                  jsx('span', { children: card.message || '' }),
+                  jsx('button', { className: 'retry', onClick: onRetry, type: 'button', children: '重试' })
+                ]
+              })
+            : null
+        ]
+      }),
+      jsxs('div', {
+        className: 'meta',
+        children: [
+          jsx('span', { title: `${channel || ''} / ${model || ''}`, children: [channel, model].filter(Boolean).join(' / ') }),
+          jsx('span', { 'data-image-dimensions': '', children: size })
+        ]
+      })
+    ]
+  })
+}
+
+function ResultBoard() {
   const job = useValue($job)
+  const draft = useValue($draft)
+  const settings = useValue($settings)
   useJobPolling()
 
-  if (!job) {
-    return jsx(EmptyState, {
-      className: 'h-full',
-      description: '左侧填提示词，点「开始生成」。结果会按顺序出现在这里，下载或复用参数随时可用。',
-      title: '还没有生成结果'
+  const [menu, setMenu] = useState(null)
+  const [preview, setPreview] = useState(null)
+
+  const running = isRunning(job)
+  const images = (job && job.images) || []
+  const expected = running || (job && job.status === 'failed')
+    ? Math.max(1, Number((job && job.params && job.params.n) || draft.n) || 1)
+    : images.length
+  const count = running || (job && job.status === 'failed') ? expected : images.length
+  const now = useBoardClock(running)
+  const urls = useBoardImages(job)
+  const queryClient = useQueryClient()
+
+  const channelName = (job && (job.channel_name || job.channel_id)) || ''
+  const modelName = (job && job.model) || ''
+
+  const startedAt = job && job.started_at ? job.started_at * 1000 : 0
+  const liveSeconds = running && startedAt ? Math.max(0, Math.floor((now - startedAt) / 1000)) : 0
+  const finished = job && typeof job.duration_ms === 'number' ? formatDuration(job.duration_ms) : ''
+
+  const cards = []
+  for (let index = 0; index < count; index += 1) {
+    const image = images[index]
+    const waiting = running
+    const failed = Boolean(job) && !running && (job.status === 'failed' || job.status === 'cancelled')
+    cards.push({
+      index,
+      image,
+      status: job ? job.status : 'idle',
+      channel: channelName,
+      model: modelName,
+      waiting,
+      failed,
+      elapsed: image ? (running ? `${liveSeconds}s` : finished) : '',
+      liveSeconds,
+      message: (job && (job.error || job.error_code)) || ''
     })
   }
 
-  const reuse = () => {
-    patchDraft({ prompt: job.prompt, mode: job.mode, model: job.model, channelId: job.channel_id, ...(job.params || {}) })
+  const layout = planResultLayout(cards.length)
+  const rows = layout.rows.flat().length === cards.length ? layout.rows : cards.map((_, index) => [index])
+
+  const previewUrls = cards.filter(card => card.image && urls[card.image.id]).map(card => urls[card.image.id])
+  const openPreview = cardIndex => {
+    const target = cards[cardIndex]
+    if (!target || !target.image || !urls[target.image.id]) return
+    const before = cards.slice(0, cardIndex).filter(card => card.image && urls[card.image.id]).length
+    setPreview({ index: before })
+  }
+
+  const retry = () => {
+    if (job) loadRecordIntoStudio({ ...job, params: job.params || {} })
+    startJob()
+  }
+
+  const continueEditing = async card => {
+    const dataUrl = card.image ? urls[card.image.id] : ''
+    if (!dataUrl) return
+    $mask.set('')
+    $references.set([{ id: `result-${card.image.id}`, name: 'result.png', dataUrl }])
+    patchDraft({
+      mode: 'edit',
+      channelId: (job && job.channel_id) || draft.channelId,
+      model: (job && job.model) || draft.model,
+      prompt: '',
+      ...(job && job.params ? job.params : {})
+    })
     $view.set('studio')
     haptic('tap')
   }
 
-  return jsxs('div', {
-    className: 'flex flex-col gap-3',
+  const reverseFromImage = async card => {
+    const dataUrl = card.image ? urls[card.image.id] : ''
+    if (!dataUrl) return
+    const channelId = (job && job.channel_id) || draft.channelId
+    if (!channelId) {
+      host.notify({ kind: 'error', message: '先选一个渠道' })
+      return
+    }
+    try {
+      const data = await api.rest('/prompt/reverse', {
+        method: 'POST',
+        body: { channel_id: channelId, model: '', prompt: '', references: [dataUrl], output: 'zh', detail: 'standard' },
+        timeoutMs: 130000
+      })
+      if (data.prompt) {
+        patchDraft({ prompt: data.prompt })
+        host.notify({ kind: 'success', message: '提示词已写入输入框' })
+      }
+    } catch (error) {
+      host.notify({ kind: 'error', message: `反推失败：${errorText(error)}` })
+    }
+  }
+
+  const copyImage = async card => {
+    const dataUrl = card.image ? urls[card.image.id] : ''
+    if (!dataUrl) return
+    try {
+      const blob = await (await fetch(dataUrl)).blob()
+      await navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })])
+      host.notify({ kind: 'success', message: '图片已复制' })
+    } catch (error) {
+      host.notify({ kind: 'error', message: `复制失败：${errorText(error)}` })
+    }
+  }
+
+  const menuGroups = card => [
+    [
+      { id: 'preview', label: '查看大图', onSelect: () => openPreview(card.index) },
+      { id: 'edit', label: '继续编辑', disabled: !card.image, onSelect: () => continueEditing(card) },
+      { id: 'retry', label: '重新生成', onSelect: retry }
+    ],
+    [
+      { id: 'copy', label: '复制图片', onSelect: () => copyImage(card) },
+      { id: 'reverse', label: '反推提示词', onSelect: () => reverseFromImage(card) }
+    ],
+    [
+      {
+        id: 'download',
+        label: '下载',
+        onSelect: () => {
+          const dataUrl = card.image ? urls[card.image.id] : ''
+          if (dataUrl) saveDataUrl(dataUrl, `imagegen-${card.image.id}.png`)
+        }
+      }
+    ]
+  ]
+
+  if (!job) {
+    return jsx('section', {
+      className: 'ig-results board',
+      children: jsx(EmptyState, {
+        className: 'h-full',
+        description: '左侧填提示词，点「开始生成」。结果会按张数排成一张结果板，右键图片出全部操作。',
+        title: '还没有生成结果'
+      })
+    })
+  }
+
+  return jsxs('section', {
+    className: 'ig-results board',
+    'data-result-preview-grid': '',
+    'data-studio-mode': job.mode,
     children: [
-      jsxs('div', {
-        className: 'flex flex-wrap items-center gap-2 text-xs text-(--ui-text-tertiary)',
+      jsxs('header', {
+        className: 'toolbar',
         children: [
-          jsx(Badge, { children: job.channel_name || job.channel_id }),
-          jsx(Badge, { children: job.model }),
-          job.status === 'queued' ? jsx('span', { children: '排队中…' }) : null,
-          job.status === 'running'
-            ? jsxs('span', { className: 'flex items-center gap-1', children: [jsx(GlyphSpinner, {}), '生成中…'] })
-            : null,
-          job.status === 'succeeded' ? jsx('span', { children: `完成 · ${formatDuration(job.duration_ms)}` }) : null,
-          job.status === 'failed' ? jsx('span', { className: 'text-(--ui-danger)', children: `失败：${job.error || job.error_code}` }) : null,
-          job.status === 'cancelled' ? jsx('span', { children: '已取消' }) : null,
-          job.status === 'lost' ? jsx('span', { className: 'text-(--ui-danger)', children: '任务状态已失效（网关重启过）' }) : null,
-          jsx('span', { className: 'flex-1' }),
-          isRunning(job)
-            ? jsx(Button, { size: 'xs', variant: 'outline', onClick: cancelJob, children: '取消' })
-            : null,
-          job.images && job.images.length > 0 ? jsx(Button, { size: 'xs', variant: 'outline', onClick: reuse, children: '复用这组参数' }) : null
+          jsxs('div', {
+            className: 'heading',
+            children: [
+              jsx('strong', { children: running ? '正在生成' : '本次结果' }),
+              jsx('span', { className: 'count', children: String(cards.length) })
+            ]
+          }),
+          jsxs('div', {
+            className: 'toolbarActions',
+            children: [
+              running ? jsx('button', { className: 'dshTool', onClick: cancelJob, type: 'button', children: '取消' }) : null,
+              cards.length > 0 && !running
+                ? jsx('button', { className: 'dshTool', onClick: retry, type: 'button', children: '重新生成' })
+                : null
+            ]
+          })
         ]
       }),
-      job.images && job.images.length > 0
-        ? jsx('div', {
-            className: 'grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-3',
-            children: job.images.map((image, index) =>
-              jsx(ResultCard, { image, index, job, key: image.id, onReuse: reuse })
+      jsx('div', {
+        className: 'grid',
+        'data-count': cards.length <= 4 ? String(cards.length) : 'many',
+        'data-rows': rows.length,
+        'data-scroll': layout.scroll ? '' : undefined,
+        children: rows.map((row, rowIndex) =>
+          jsx('div', {
+            className: 'row',
+            'data-result-row': rowIndex,
+            children: row.map(cardIndex =>
+              jsx(ResultBoardCard, {
+                card: cards[cardIndex],
+                onMenu: (x, y, index) => setMenu({ x, y, index }),
+                onPreview: openPreview,
+                onRetry: retry,
+                urls
+              }, cardIndex)
             )
+          }, `row-${rowIndex}`)
+        )
+      }),
+      menu !== null && cards[menu.index]
+        ? jsx(ImageActionMenu, {
+            groups: menuGroups(cards[menu.index]),
+            label: '图片操作',
+            onClose: () => setMenu(null),
+            x: menu.x,
+            y: menu.y
           })
-        : isRunning(job)
-          ? jsxs('div', {
-              className: 'flex flex-col items-center gap-3 py-16 text-sm text-(--ui-text-tertiary)',
-              children: [jsx(GlyphSpinner, {}), jsx('span', { children: '正在生成，最长约 4 分钟' })]
-            })
-          : null
+        : null,
+      preview !== null
+        ? jsx(BoardLightbox, {
+            images: previewUrls,
+            index: preview.index,
+            onChange: index => setPreview({ index }),
+            onClose: () => setPreview(null)
+          })
+        : null
     ]
   })
 }
+
 
 // ── reference images ───────────────────────────────────────────────────────
 
@@ -1008,20 +1520,10 @@ function StudioView() {
             ]
           }),
 
-          // ── centre: results ─────────────────────────────────────────────
-          jsxs('div', {
+          // ── centre: the result board ─────────────────────────────────────
+          jsx('div', {
             className: 'dshCol dshCenter',
-            children: [
-              jsxs('div', {
-                className: 'dshCenterHead',
-                children: [
-                  jsx('span', {
-                    children: running ? '正在生成…' : `本次生成 ${(job && job.images && job.images.length) || 0} 张`
-                  })
-                ]
-              }),
-              jsx('div', { className: 'dshCenterBody', children: jsx(ResultPanel, {}) })
-            ]
+            children: jsx('div', { className: 'dshCenterBody', children: jsx(ResultBoard, {}) })
           }),
 
           // ── right: history rail ─────────────────────────────────────────

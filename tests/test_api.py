@@ -324,3 +324,16 @@ def test_batch_favorite_and_delete(client, monkeypatch):
     assert client.get("/api/plugins/hermes-imagegen/history").json()["total"] == 1
     assert client.post("/api/plugins/hermes-imagegen/history/batch", json={"ids": [second], "action": "nope"}).status_code == 400
     assert client.post("/api/plugins/hermes-imagegen/history/batch", json={"ids": [], "action": "delete"}).status_code == 400
+
+
+def test_ui_css_ships_every_surface_sheet(client):
+    """The injected stylesheet carries each surface root, and no DSH tokens."""
+    response = client.get("/api/plugins/hermes-imagegen/ui.css")
+    assert response.status_code == 200, response.text
+    css = response.json()["css"]
+    for root in (".ig-root", ".ig-results", ".ig-menu", ".ig-loading"):
+        assert root in css, f"{root} missing from the injected stylesheet"
+    # The result board must carry the ported layout rules, not only the shell.
+    assert ".ig-results .row" in css or ".ig-results.row" in css
+    assert ".ig-menu .menu" in css or ".ig-menu.menu" in css
+    assert "dsw-alias" not in css, "a generated sheet still references DSH tokens"

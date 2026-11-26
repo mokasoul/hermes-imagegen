@@ -35,11 +35,23 @@ Hermes Desktop plugin platform.
 
 `design/panel.module.css` is a verbatim copy of the upstream panel stylesheet
 (`src/client/panel.module.css`, Apache-2.0, Copyright the dsh-imagegen
-authors). It is vendored — not rewritten — so `scripts/build_panel_css.py` can
-regenerate `desktop/panel.css` reproducibly in CI: the script only scopes every
-selector under `.ig-root`, maps the `--dsw-alias-*` tokens onto Hermes app
-tokens and prefixes keyframes. Re-run the script after replacing the vendored
-file; CI fails if the generated file drifts.
+authors). `design/studio-results.module.css`, `design/image-action-menu.module.css`
+and `design/generation-loading.module.css` are verbatim copies of the matching
+upstream CSS modules (`src/client/*.module.css`, same licence and copyright) —
+the generation board, its right-click menu and the waiting animation. They are
+vendored — not rewritten — so `scripts/build_panel_css.py` can regenerate
+`desktop/panel.css`, `panel-results.css`, `panel-menu.css` and
+`panel-loading.css` reproducibly in CI: the script scopes every selector under
+the sheet's own surface root, maps the `--dsw-alias-*` tokens onto Hermes app
+tokens and prefixes keyframes. Each sheet gets a separate root (`.ig-root`,
+`.ig-results`, `.ig-menu`, `.ig-loading`) because upstream class names collide
+once they stop being hashed. Re-run the script after replacing a vendored file;
+CI fails if a generated file drifts.
+
+The result-board row table in `desktop/plugin.js` (`planResultLayout`) is a
+port of the upstream `src/client/result-layout.ts` — the same fixed sheet
+(1 full, 2 split, 3 as two-over-one, 4 as 2×2, …), checked by
+`scripts/check_result_layout.mjs`.
 
 ## Bundled prompt-template snapshots
 

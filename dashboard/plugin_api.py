@@ -208,18 +208,27 @@ async def cancel_job(job_id: str) -> dict[str, Any]:
 async def ui_css() -> dict[str, Any]:
     """The plugin's stylesheets, concatenated in cascade order.
 
-    Two generated files plus one hand-written: ``panel.css`` ports the upstream
-    (every rule scoped under ``.ig-root``, themed with the app's ``--ui-*``
-    tokens) and ``plugin-ui.css`` renders the utility vocabulary this plugin's
-    own views use — a plugin's class strings never reach the app's Tailwind
-    build, so without it those names are dead strings.
+    Generated sheets port the upstream CSS modules (every rule scoped under the
+    surface's root, themed with the app's ``--ui-*`` tokens) and
+    ``plugin-ui.css`` renders the utility vocabulary this plugin's own views use
+    — a plugin's class strings never reach the app's Tailwind build, so without
+    it those names are dead strings. ``plugin-dsh.css`` is the hand-written
+    studio surface and loads last so it can override the ported sheets.
 
     Served as JSON so the desktop half can inject it through the same transport
     it uses for everything else (a CSS module cannot be imported by a plugin).
     """
     base = Path(__file__).resolve().parent.parent / "desktop"
+    sheets = (
+        "panel.css",
+        "panel-results.css",
+        "panel-menu.css",
+        "panel-loading.css",
+        "plugin-ui.css",
+        "plugin-dsh.css",
+    )
     parts: list[str] = []
-    for name in ("panel.css", "plugin-ui.css", "plugin-dsh.css"):
+    for name in sheets:
         path = base / name
         if not path.is_file():
             raise HTTPException(

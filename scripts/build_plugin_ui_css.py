@@ -265,6 +265,16 @@ def main() -> int:
     if HANDWRITTEN_CSS.exists():
         upstream_css += HANDWRITTEN_CSS.read_text(encoding="utf-8")
 
+    # Names the ported result-board/menu/loading sheets provide. They only mean
+    # something under their own roots (.ig-results/.ig-menu/.ig-loading), so they
+    # are never rendered into the .ig-root utility sheet — but they must not be
+    # reported as dead strings either.
+    surface_defined: set[str] = set()
+    for name in ("panel-results.css", "panel-menu.css", "panel-loading.css"):
+        path = ROOT / "desktop" / name
+        if path.exists():
+            surface_defined.update(re.findall(r"\.([A-Za-z_][\w-]*)", path.read_text(encoding="utf-8")))
+
     rules: list[str] = []
     unknown: list[str] = []
     skipped: list[str] = []
@@ -275,7 +285,7 @@ def main() -> int:
             continue
         body = render(token)
         if body is None:
-            if f".{token}" in upstream_css:
+            if f".{token}" in upstream_css or token in surface_defined:
                 skipped.append(token)
             else:
                 unknown.append(token)

@@ -1,0 +1,416 @@
+/*
+ * Generation board.
+ *
+ * The card is the image; everything else is quiet. Actions live in the
+ * right-click menu (also reachable from the "…" button), so no card grows a
+ * button row that competes with the picture.
+ */
+
+.board {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  min-width: 0;
+  padding: 52px 20px 20px;
+  color: var(--dsw-alias-label-primary);
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 28px;
+}
+
+.heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.count {
+  min-width: 20px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--dsw-alias-bg-layer-2, #f1f2f6);
+  color: var(--dsw-alias-label-secondary, #575b65);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 18px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.toolbarActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.append {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--dsw-alias-border-l1, #e2e3ea);
+  border-radius: 12px;
+  background: var(--dsw-alias-bg-layer-2, #f1f2f6);
+}
+
+.append > span {
+  flex: 1 1 220px;
+  min-width: 0;
+  color: var(--dsw-alias-label-tertiary, #858b98);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.appendSubmit {
+  height: 30px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--dsw-alias-brand-primary, #4f46e5);
+  color: #fff;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.appendSubmit:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/*
+ * The board is a photo sheet, not a scrolling list: it fills the panel, and the
+ * row split comes from result-layout.ts, which measures the board and the image
+ * shapes (two side by side, three portraits in a row, otherwise a balanced
+ * sheet). Each row divides its width evenly; each cell keeps the image fully
+ * visible (contain, never cropped).
+ */
+.grid {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.row {
+  display: flex;
+  flex: 1 1 0;
+  min-height: 0;
+  gap: 12px;
+}
+
+/* Too many cards for one screen: rows keep a readable height and the board scrolls. */
+.grid[data-scroll] {
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
+.grid[data-scroll] .row {
+  flex: none;
+  min-height: 220px;
+}
+
+.card {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  margin: 0;
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid var(--dsw-alias-border-l1, #e2e3ea);
+  border-radius: 14px;
+  overflow: hidden;
+  background: var(--dsw-alias-bg-layer-1, #fcfcfd);
+  transition: border-color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.card:hover {
+  border-color: var(--dsw-alias-border-l2, #d3d5dd);
+  box-shadow: 0 14px 34px rgb(20 30 60 / 9%);
+}
+
+.media {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  background: var(--dsw-alias-bg-layer-2, #f1f2f6);
+}
+
+/* Letterbox bars around a contained image blend into the card instead of
+   framing it with a grey band. Pending/failed cards keep the grey field. */
+.media:not([data-empty]) {
+  background: var(--dsw-alias-bg-layer-1, #fcfcfd);
+}
+
+.imageButton {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: zoom-in;
+}
+
+.imageButton::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(to top, rgb(12 16 26 / 22%), transparent 38%);
+  opacity: 0;
+  transition: opacity 0.18s ease;
+  pointer-events: none;
+}
+
+.card:hover .imageButton::after {
+  opacity: 1;
+}
+
+.imageButton img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  object-fit: contain;
+}
+
+.imageButton:focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary, #4f46e5);
+  outline-offset: -2px;
+}
+
+.moreButton {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 9px;
+  background: rgb(15 18 24 / 52%);
+  color: #fff;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.16s ease, background 0.16s ease;
+}
+
+.card:hover .moreButton,
+.moreButton:focus-visible {
+  opacity: 1;
+}
+
+.moreButton:hover {
+  background: rgb(15 18 24 / 78%);
+}
+
+.moreButton:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 1px;
+}
+
+@media (hover: none) {
+  .moreButton { opacity: 1; }
+  .imageButton::after { display: none; }
+}
+
+/*
+ * Bottom-right corner of the picture: download first, then the duration badge.
+ * Both stay hidden until the pointer is on the card (or keyboard focus reaches
+ * the button), because a permanent pill row covers the picture it describes.
+ * The badge keeps its own absolute position in panel.module.css (other surfaces
+ * use it that way), so it is flattened back into this row here.
+ */
+.mediaCorner {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.16s ease;
+}
+
+/* Both result surfaces mark their card, so one rule covers the studio board and
+   the plain history/gallery grid (their card classes come from other modules). */
+[data-result-card]:hover .mediaCorner,
+[data-result-card]:focus-within .mediaCorner {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Touch shells have no hover: keep the actions reachable. */
+@media (hover: none) {
+  .mediaCorner {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+.mediaCorner [data-generation-duration] {
+  position: static;
+  right: auto;
+  bottom: auto;
+}
+
+.cardDownload {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  color: #fff;
+  background: rgb(15 18 24 / 78%);
+  cursor: pointer;
+  transition: background 0.16s ease;
+}
+
+.cardDownload:hover {
+  background: rgb(15 18 24 / 92%);
+}
+
+.cardDownload:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 1px;
+}
+
+.pending {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 10px;
+  background: color-mix(in srgb, var(--dsw-alias-bg-layer-2, #f1f2f6) 88%, transparent);
+}
+
+.error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 28px 18px;
+  text-align: center;
+  color: var(--dsw-alias-label-secondary, #575b65);
+  font-size: 12px;
+}
+
+.error strong {
+  color: var(--dsw-alias-label-primary, #25262a);
+  font-size: 12.5px;
+}
+
+.error span {
+  max-width: 100%;
+  max-height: 84px;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  opacity: 0.8;
+  line-height: 1.5;
+}
+
+.retry {
+  margin-top: 2px;
+  height: 30px;
+  padding: 0 16px;
+  border: 1px solid var(--dsw-alias-border-l1, #e2e3ea);
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-layer-1, #fcfcfd);
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.retry:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover, var(--dsw-alias-bg-layer-2));
+}
+
+.retry:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.meta {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+  padding: 9px 12px;
+  border-top: 1px solid var(--dsw-alias-border-l1, #e2e3ea);
+  color: var(--dsw-alias-label-secondary, #575b65);
+  font-size: 11.5px;
+}
+
+.meta > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--dsw-alias-label-primary, #25262a);
+  font-weight: 500;
+}
+
+.meta > span:last-child {
+  flex: none;
+  color: var(--dsw-alias-label-tertiary, #858b98);
+  font-variant-numeric: tabular-nums;
+}
+
+.errorText {
+  flex: none;
+  margin: 0;
+  padding: 8px 12px 10px;
+  border-top: 1px solid var(--dsw-alias-border-l1, #e2e3ea);
+  color: var(--dsw-alias-label-secondary, #575b65);
+  font-size: 11.5px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.board[data-imagegen-private='true'] img {
+  visibility: hidden !important;
+}
+
+@media (max-width: 560px) {
+  .board {
+    padding: 48px 10px 12px;
+  }
+  /* The planner already drops to narrower sheets on a narrow board; only the
+     gap needs to shrink with it. */
+  .grid,
+  .row {
+    gap: 10px;
+  }
+}

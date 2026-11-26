@@ -36,7 +36,7 @@ def _add_channel(client, **overrides):
 
 
 def _fake_generate(images=None, error=None):
-    async def generate(channel, request, references=None, mask=None, cancel=None, transport=None):
+    async def generate(channel, request, references=None, mask=None, cancel=None, transport=None, **kwargs):
         if error is not None:
             raise error
         return images or [image_engine.GeneratedImage(data=png_bytes(), mime="image/png")]
@@ -120,7 +120,7 @@ def test_edit_job_decodes_references(client, monkeypatch):
     _add_channel(client)
     captured = {}
 
-    async def generate(channel, request, references=None, mask=None, cancel=None, transport=None):
+    async def generate(channel, request, references=None, mask=None, cancel=None, transport=None, **kwargs):
         captured["references"] = len(references or [])
         captured["mode"] = request["mode"]
         return [image_engine.GeneratedImage(data=png_bytes(2, 2), mime="image/png")]
@@ -229,7 +229,7 @@ def test_mask_flows_from_the_job_payload_into_the_engine(client, monkeypatch):
     _add_channel(client)
     captured = {}
 
-    async def generate(channel, request, references=None, mask=None, cancel=None, transport=None):
+    async def generate(channel, request, references=None, mask=None, cancel=None, transport=None, **kwargs):
         captured["mask"] = mask
         return [image_engine.GeneratedImage(data=png_bytes(2, 2), mime="image/png")]
 
@@ -278,7 +278,7 @@ def test_non_png_mask_is_refused(client):
 def _run_one_generation(client, monkeypatch, prompt="a cat"):
     _add_channel(client) if not client.get("/api/plugins/hermes-imagegen/settings").json()["channels"] else None
 
-    async def generate(channel, request, references=None, mask=None, cancel=None, transport=None):
+    async def generate(channel, request, references=None, mask=None, cancel=None, transport=None, **kwargs):
         return [image_engine.GeneratedImage(data=png_bytes(2, 2), mime="image/png")]
 
     monkeypatch.setattr(image_engine, "generate", generate)

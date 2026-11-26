@@ -689,10 +689,16 @@ function ResultBoard() {
 
   const running = isRunning(job)
   const images = (job && job.images) || []
-  const expected = running || (job && job.status === 'failed')
-    ? Math.max(1, Number((job && job.params && job.params.n) || draft.n) || 1)
-    : images.length
-  const count = running || (job && job.status === 'failed') ? expected : images.length
+  const failedJob = Boolean(job) && !running && (job.status === 'failed' || job.status === 'cancelled')
+  const expected = Math.max(1, Number((job && job.params && job.params.n) || draft.n) || 1)
+  // A partial fan-out keeps its surviving images: still show a slot for every
+  // requested position, so the ones that lost their request are visible and
+  // retryable instead of silently missing from the board.
+  const count = running || failedJob
+    ? expected
+    : images.length && job && job.partial_error
+      ? Math.max(images.length, expected)
+      : images.length
   const now = useBoardClock(running)
   const urls = useBoardImages(job)
   const queryClient = useQueryClient()
@@ -708,7 +714,7 @@ function ResultBoard() {
   for (let index = 0; index < count; index += 1) {
     const image = images[index]
     const waiting = running
-    const failed = Boolean(job) && !running && (job.status === 'failed' || job.status === 'cancelled')
+    const failed = failedJob || Boolean(job && job.partial_error && !image)
     cards.push({
       index,
       image,
@@ -719,7 +725,7 @@ function ResultBoard() {
       failed,
       elapsed: image ? (running ? `${liveSeconds}s` : finished) : '',
       liveSeconds,
-      message: (job && (job.error || job.error_code)) || ''
+      message: (job && (job.error || job.error_code || job.partial_error)) || ''
     })
   }
 
@@ -849,6 +855,9 @@ function ResultBoard() {
           })
         ]
       }),
+      job && job.partial_error
+        ? jsx('div', { className: 'dshError', role: 'status', children: job.partial_error })
+        : null,
       jsx('div', {
         className: 'grid',
         'data-count': cards.length <= 4 ? String(cards.length) : 'many',
@@ -1550,7 +1559,8 @@ const EMPTY_FORM = {
   api_url_full: false,
   protocol: 'auto',
   default_model: '',
-  clear_api_key: false
+  clear_api_key: false,
+  download_timeout_s: 60
 }
 
 function ChannelsView() {
@@ -1577,7 +1587,8 @@ function ChannelsView() {
       api_url_full: Boolean(channel.api_url_full),
       protocol: channel.protocol || 'auto',
       default_model: channel.default_model || '',
-      clear_api_key: false
+      clear_api_key: false,
+      download_timeout_s: channel.download_timeout_s || 60
     })
   }
 
@@ -1793,6 +1804,21 @@ function ChannelsView() {
                     ],
                     value: form.protocol
                   })
+                ]
+              }),
+              jsxs('div', {
+                className: 'flex items-center gap-2',
+                children: [
+                  jsx('span', { className: 'text-[0.6875rem] text-(--ui-text-tertiary)', children: '结果图下载超时' }),
+                  jsx(Input, {
+                    className: 'h-7 w-[70px] text-xs',
+                    max: 600,
+                    min: 10,
+                    onChange: event => patch({ download_timeout_s: Number(event.target.value) || 60 }),
+                    type: 'number',
+                    value: form.download_timeout_s
+                  }),
+                  jsx('span', { className: 'text-[0.6875rem] text-(--ui-text-tertiary)', children: '秒（10–600）' })
                 ]
               }),
               jsxs('div', {

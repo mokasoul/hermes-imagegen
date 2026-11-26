@@ -48,9 +48,81 @@ _EXT_MIME = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "web
 class ImageGenError(Exception):
     """Upstream/config failure with a stable wire code for the UI."""
 
-    def __init__(self, message: str, code: str = "generate-failed") -> None:
+    def __init__(
+        self,
+        message: str,
+        code: str = "generate-failed",
+        status: int | None = None,
+        *,
+        no_retry: bool = False,
+    ) -> None:
         super().__init__(message)
         self.code = code
+        # HTTP status when the failure came from a response; drives retry decisions.
+        self.status = status
+        # Set once an async task has been accepted upstream: retrying the call
+        # would resubmit (and re-bill) work the provider is already running.
+        self.no_retry = no_retry
+
+
+# Responses worth a transparent retry: the request never reached the model
+# (gateway hiccup, origin overload, Cloudflare edge error) or the gateway itself
+# flagged temporary trouble. Auth, validation and content-policy rejections are
+# final — retrying them only burns quota. Mirrors the upstream engine table.
+TRANSIENT_STATUSES = frozenset({408, 429, 500, 502, 503, 504, 520, 522, 524})
+RETRY_MAX_ATTEMPTS = 3
+RETRY_BASE_DELAY_S = 1.5
+
+
+async def with_transient_retry(run: Any, cancel: Any = None) -> Any:
+    """One initial attempt plus up to two retries while the failure looks transient.
+
+    The caller's cancellation always wins: a set cancel event rethrows the
+    in-flight failure instead of sleeping past it.
+    """
+    for attempt in range(1, RETRY_MAX_ATTEMPTS + 1):
+        try:
+            return await run()
+        except ImageGenError as error:
+            cancelled = cancel is not None and cancel.is_set()
+            retryable = not cancelled and not error.no_retry and (
+                error.code == "upstream-unreachable"
+                or (error.status is not None and error.status in TRANSIENT_STATUSES)
+            )
+            if not retryable or attempt >= RETRY_MAX_ATTEMPTS:
+                raise
+            await asyncio.sleep(RETRY_BASE_DELAY_S * attempt)
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
+def _fan_out(settled: list[Any], requested: int) -> tuple[list[GeneratedImage], str | None]:
+    """Flatten the parallel single-image calls behind one request.
+
+    A surviving image keeps its place (the images are independent variations of
+    the same prompt, so a compacted position is still a valid result); the
+    request only fails when nothing succeeded. A partial result stays a success
+    and names what failed, so the board can offer a retry for those positions.
+    """
+    images: list[GeneratedImage] = []
+    failures: list[BaseException] = []
+    for outcome in settled:
+        if isinstance(outcome, asyncio.CancelledError):
+            raise outcome
+        if isinstance(outcome, BaseException):
+            failures.append(outcome)
+        else:
+            images.extend(outcome)
+    if not images:
+        first = failures[0] if failures else None
+        if isinstance(first, ImageGenError):
+            raise first
+        if first is not None:
+            raise ImageGenError(f"上游并行请求全部失败：{first}", "generate-failed") from first
+        raise ImageGenError("上游并行请求全部失败", "generate-failed")
+    if failures:
+        detail = str(failures[0]) if failures else "未知错误"
+        return images, f"{len(failures)}/{requested} 张图片生成失败：{detail}"
+    return images, None
 
 
 @dataclass
@@ -155,6 +227,14 @@ def is_model_scope(base_url: str) -> bool:
         return False
 
 
+def download_timeout_of(channel: Mapping[str, Any]) -> float:
+    """Per-channel result-download budget (seconds); 10–600, default 60."""
+    value = channel.get("download_timeout_s")
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and 10 <= float(value) <= 600:
+        return float(value)
+    return IMAGE_FETCH_TIMEOUT_S
+
+
 def normalize_base_url(channel: Mapping[str, Any]) -> str:
     base = str(channel.get("api_url") or "").strip().rstrip("/")
     if not base:
@@ -232,7 +312,7 @@ async def _read_job_text(client: httpx.AsyncClient, url: str, headers: Mapping[s
     except ValueError as error:
         raise ImageGenError(f"上游任务接口返回了非 JSON 响应（HTTP {response.status_code}）", "upstream-invalid") from error
     if response.status_code >= 400 or not isinstance(payload, dict):
-        raise ImageGenError(_error_message(payload, response.status_code), "upstream-rejected")
+        raise ImageGenError(_error_message(payload, response.status_code), "upstream-rejected", response.status_code)
     return payload
 
 
@@ -248,21 +328,46 @@ async def _poll_task(
     if model_scope:
         headers["X-ModelScope-Task-Type"] = "image_generation"
     poll_url = f"{base_url}/tasks/{task_id}"
-    deadline = asyncio.get_running_loop().time() + ASYNC_POLL_MAX_S
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + ASYNC_POLL_MAX_S
     delay = 1.0
-    while asyncio.get_running_loop().time() < deadline:
-        payload = await _read_job_text(client, poll_url, headers)
+    last_status = ""
+    last_error = ""
+    while loop.time() < deadline:
+        try:
+            payload = await _read_job_text(client, poll_url, headers)
+        except ImageGenError as error:
+            # Upstream has already accepted (and billed) this task: a hiccup on
+            # the poll must not bubble out to the outer retry, which would
+            # resubmit the whole generation. Keep polling the same task id.
+            transient = error.code == "upstream-unreachable" or (
+                error.status is not None and error.status in TRANSIENT_STATUSES
+            )
+            if not transient or loop.time() + delay >= deadline:
+                raise ImageGenError(str(error), error.code, error.status, no_retry=True) from error
+            last_error = str(error)
+            await asyncio.sleep(delay)
+            delay = min(delay * 1.6, 5.0)
+            continue
         status = str(payload.get("task_status") or payload.get("status") or "").lower()
+        if status:
+            last_status = status
         if status in ASYNC_FAILED:
-            raise ImageGenError(str(payload.get("message") or "上游异步任务失败"), "upstream-rejected")
+            raise ImageGenError(
+                str(payload.get("message") or "上游异步任务失败"), "upstream-rejected", no_retry=True
+            )
         items = _image_items(payload)
         if items and (status in ASYNC_DONE or status == ""):
             return items
         if status in ASYNC_DONE and not items:
-            raise ImageGenError("上游异步任务已完成，但没有返回图片", "upstream-empty")
+            raise ImageGenError("上游异步任务已完成，但没有返回图片", "upstream-empty", no_retry=True)
+        # A status word outside the known sets means "still working": providers
+        # invent their own vocabulary, and aborting here would abandon a paid
+        # task. The deadline is the bound; only explicit failure words fail early.
         await asyncio.sleep(delay)
         delay = min(delay * 1.6, 5.0)
-    raise ImageGenError("上游异步任务轮询超时（240 秒）", "upstream-timeout")
+    detail = f"，最后状态：{last_status}" if last_status else (f"，最后错误：{last_error}" if last_error else "")
+    raise ImageGenError(f"上游异步任务轮询超时（240 秒{detail}）", "upstream-timeout", no_retry=True)
 
 
 async def _normalize_item(
@@ -270,6 +375,7 @@ async def _normalize_item(
     item: Mapping[str, Any],
     api_base: str,
     api_key: str,
+    download_timeout: float = IMAGE_FETCH_TIMEOUT_S,
 ) -> GeneratedImage:
     revised = item.get("revised_prompt") if isinstance(item.get("revised_prompt"), str) else None
     b64 = item.get("b64_json")
@@ -293,13 +399,15 @@ async def _normalize_item(
     # relay that answers with a foreign image URL must not harvest the Bearer.
     headers = {"authorization": f"Bearer {api_key}"} if _same_origin(url, api_base) else {}
     try:
-        response = await client.get(url, headers=headers)
+        response = await client.get(url, headers=headers, timeout=httpx.Timeout(download_timeout, connect=15.0))
     except httpx.TimeoutException as error:
-        raise ImageGenError("下载上游结果图片超时", "upstream-timeout") from error
+        raise ImageGenError(f"下载上游结果图片超时（{download_timeout:g} 秒）", "upstream-timeout") from error
     except httpx.HTTPError as error:
         raise ImageGenError(f"无法下载上游结果图片：{error}", "upstream-unreachable") from error
     if response.status_code >= 400:
-        raise ImageGenError(f"下载上游结果图片失败（HTTP {response.status_code}）", "upstream-invalid")
+        raise ImageGenError(
+            f"下载上游结果图片失败（HTTP {response.status_code}）", "upstream-invalid", response.status_code
+        )
     data = response.content
     if len(data) > MAX_RESULT_BYTES:
         raise ImageGenError("上游返回的图片超过 40MB 上限", "upstream-invalid")
@@ -427,12 +535,13 @@ async def _request_one(
         raise ImageGenError(
             f"{_error_message(body, response.status_code)}（HTTP {response.status_code} · {display_url(url)}）",
             "upstream-rejected",
+            response.status_code,
         )
 
     task_id = body.get("task_id")
     if isinstance(task_id, str) and task_id.strip():
         items = await _poll_task(client, channel, base_url, task_id.strip(), api_key, model_scope)
-        return [await _normalize_item(client, item, base_url, api_key) for item in items]
+        return [await _normalize_item(client, item, base_url, api_key, download_timeout_of(channel)) for item in items]
 
     records = body.get("data")
     if not isinstance(records, list):
@@ -447,12 +556,12 @@ async def _request_one(
             collected.extend(await _poll_task(client, channel, base_url, entry["task_id"].strip(), api_key, model_scope))
         if not collected:
             raise ImageGenError("上游异步任务完成但没有图片结果", "upstream-empty")
-        return [await _normalize_item(client, item, base_url, api_key) for item in collected]
+        return [await _normalize_item(client, item, base_url, api_key, download_timeout_of(channel)) for item in collected]
 
     items = _image_items(records)
     if not items:
         raise ImageGenError("上游响应里没有可识别的图片", "upstream-invalid")
-    return [await _normalize_item(client, item, base_url, api_key) for item in items]
+    return [await _normalize_item(client, item, base_url, api_key, download_timeout_of(channel)) for item in items]
 
 
 # --- Chat Completions helpers (ported from the upstream engine) -----------
@@ -682,7 +791,7 @@ async def _generate_qwen(
     status, payload, _ = await _post_json(client, url, api_key, body)
     if status >= 400 or not isinstance(payload, dict):
         raise ImageGenError(
-            f"{_error_message(payload, status)}（HTTP {status} · {display_url(url)}）", "upstream-rejected"
+            f"{_error_message(payload, status)}（HTTP {status} · {display_url(url)}）", "upstream-rejected", status
         )
     urls: list[str] = []
     output = payload.get("output")
@@ -695,7 +804,7 @@ async def _generate_qwen(
                 urls.append(item["image"])
     if not urls:
         raise ImageGenError("上游响应缺少图片内容", "upstream-empty")
-    return [await _normalize_item(client, {"url": url}, base_url, api_key) for url in urls]
+    return [await _normalize_item(client, {"url": url}, base_url, api_key, download_timeout_of(channel)) for url in urls]
 
 
 async def _generate_minimax(
@@ -734,7 +843,7 @@ async def _generate_minimax(
     status, payload, _ = await _post_json(client, url, api_key, body)
     if not isinstance(payload, dict):
         raise ImageGenError(
-            f"{_error_message(payload, status)}（HTTP {status} · {display_url(url)}）", "upstream-rejected"
+            f"{_error_message(payload, status)}（HTTP {status} · {display_url(url)}）", "upstream-rejected", status
         )
     base_resp = payload.get("base_resp")
     if isinstance(base_resp, dict):
@@ -747,7 +856,7 @@ async def _generate_minimax(
             )
     if status >= 400:
         raise ImageGenError(
-            f"{_error_message(payload, status)}（HTTP {status} · {display_url(url)}）", "upstream-rejected"
+            f"{_error_message(payload, status)}（HTTP {status} · {display_url(url)}）", "upstream-rejected", status
         )
 
     data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
@@ -767,7 +876,7 @@ async def _generate_minimax(
             raise ImageGenError("MiniMax 返回的 base64 图片无法解码", "upstream-invalid") from error
         images.append(GeneratedImage(data=block, mime=sniff_image_mime(block) or "image/jpeg"))
     for raw in raw_urls:
-        images.append(await _normalize_item(client, {"url": raw}, base_url, api_key))
+        images.append(await _normalize_item(client, {"url": raw}, base_url, api_key, download_timeout_of(channel)))
     return images
 
 
@@ -800,13 +909,13 @@ async def _generate_chat(
     status, payload, _ = await _post_json(client, url, api_key, body)
     if status >= 400 or not isinstance(payload, dict):
         raise ImageGenError(
-            f"{_error_message(payload, status)}（HTTP {status} · {display_url(url)}）", "upstream-rejected"
+            f"{_error_message(payload, status)}（HTTP {status} · {display_url(url)}）", "upstream-rejected", status
         )
     items = _chat_image_items_of(payload)
     if not items:
         detail = _chat_error_text_of(payload)[:1200] or "Chat Completions 响应中没有可用的图片结果"
         raise ImageGenError(detail, "upstream-empty")
-    return [await _normalize_item(client, item, base_url, api_key) for item in items]
+    return [await _normalize_item(client, item, base_url, api_key, download_timeout_of(channel)) for item in items]
 
 
 async def generate(
@@ -816,8 +925,14 @@ async def generate(
     mask: bytes | None = None,
     cancel: asyncio.Event | None = None,
     transport: httpx.AsyncBaseTransport | None = None,
+    outcome: dict[str, Any] | None = None,
 ) -> list[GeneratedImage]:
-    """Run one generation request through the protocol + family the channel implies."""
+    """Run one generation request through the protocol + family the channel implies.
+
+    ``outcome`` receives ``{"partial_error": str | None}``: a fan-out batch that
+    lost some of its parallel requests still returns its surviving images and
+    names the loss there, instead of failing the whole request.
+    """
     refs = list(references or [])
     model = models.wire_model(request)
     _check_channel_ready(channel)
@@ -851,26 +966,44 @@ async def generate(
             # Chat has no batch parameter: one call per image.
             async def chat_one() -> list[GeneratedImage]:
                 guard()
-                return await _generate_chat(client, channel, base_url, api_key, request, refs)
+                return await with_transient_retry(
+                    lambda: _generate_chat(client, channel, base_url, api_key, request, refs), cancel
+                )
 
-            results = await asyncio.gather(*(chat_one() for _ in range(count)))
+            settled = await asyncio.gather(*(chat_one() for _ in range(count)), return_exceptions=True)
+            images, partial_error = _fan_out(settled, count)
         elif family == "qwen" and not is_model_scope(base_url):
             # ModelScope serves Qwen through the OpenAI shape, so only the
             # native DashScope host takes this branch (as upstream does).
             guard()
-            results = [await _generate_qwen(client, channel, base_url, api_key, request, refs)]
+            images = list(
+                await with_transient_retry(
+                    lambda: _generate_qwen(client, channel, base_url, api_key, request, refs), cancel
+                )
+            )
+            partial_error = None
         elif family == "minimax":
             guard()
-            results = [await _generate_minimax(client, channel, base_url, api_key, request, refs)]
+            images = list(
+                await with_transient_retry(
+                    lambda: _generate_minimax(client, channel, base_url, api_key, request, refs), cancel
+                )
+            )
+            partial_error = None
         else:
             params = models.effective_params(request, channel)
 
             async def images_one() -> list[GeneratedImage]:
                 guard()
-                return await _request_one(client, channel, request, params, refs, mask)
+                return await with_transient_retry(
+                    lambda: _request_one(client, channel, request, params, refs, mask), cancel
+                )
 
-            results = await asyncio.gather(*(images_one() for _ in range(count)))
-    return [image for batch in results for image in batch]
+            settled = await asyncio.gather(*(images_one() for _ in range(count)), return_exceptions=True)
+            images, partial_error = _fan_out(settled, count)
+    if outcome is not None:
+        outcome["partial_error"] = partial_error
+    return images
 
 
 async def detect_models(

@@ -16,15 +16,16 @@
 | 渠道配置（多提供方、密钥只存服务端、支持 `api_key_env`） | ✅ |
 | 模型探测（同时探 `<base>/models` 与 `<base>/models?kind=image`） | ✅ |
 | 文生图 `images/generations` | ✅ |
-| 图生图 `images/edits`（多参考图 + PNG 遮罩尺寸校验） | ✅ |
+| 图生图 `images/edits`（多参考图 + PNG 遮罩尺寸校验；渠道可配结果图下载超时 10–600 秒，默认 60） | ✅ |
 | 按模型族塑形请求体（gpt-image / dall-e / grok / nanobanana / seedream / sensenova / zhipu） | ✅ |
 | 三种非 OpenAI 协议：Chat Completions（含 markdown/HTML/裸链/base64 图片抽取与 `<think>` 剥离）、DashScope 原生 Qwen（`宽*高`、版本化批量）、MiniMax 原生 `/image_generation`（`base_resp` 判定、`subject_reference` 图生图） | ✅ |
 | 异步任务轮询（`task_id` → `GET /tasks/{id}`，含 ModelScope 头） | ✅ |
+| 上游可靠性（连接失败 / 408 / 429 / 5xx / Cloudflare 520–524 自动重试 3 次指数退避，鉴权与内容审核不重试；并行出图部分成功保留已出图并点明失败；轮询抖动原地重试不重复提交、不重复计费；任务被接受后绝不重发） | ✅ |
 | 历史记录（SQLite）+ 图片落盘 + 服务端取图 | ✅ |
 | 桌面工作台（`/imagegen` 整页 + 侧边栏入口 + ⌘K 命令：提示词、模式、渠道/模型、比例、清晰度、数量、参考图、结果下载/复用、参数记忆） | ✅ |
 | 结果板（按张数固定排版：1 张铺满 / 2 张左右 / 3 张上二下一 / 4 张 2×2 / 5～6 张上三下二三 / 更多三列滚动；图片 `contain` 不裁切；右键或「⋯」出全部操作：查看大图、继续编辑、重新生成、复制图片、反推提示词、下载；角落下载与耗时仅悬停显示；生成中点阵动画；大图左右键翻页） | ✅ |
 | 历史 / 画廊（3 列瀑布卡片，图片按 4:5 / 4:3 / 3:4 交错；卡上标签 chips + 行内标签编辑、按标签筛选、右上多选、批量收藏/取消收藏/删除、载入参数、收藏过滤、分页） | ✅ |
-| 对话出图工具（`generate_image` / `edit_image` / `get_image_generation_task` / `cancel_image_generation_task`，与工作台共用同一任务队列与历史） | ✅ |
+| 对话出图工具（`generate_image` / `edit_image` / `get_image_generation_task` / `cancel_image_generation_task`，与工作台共用同一任务队列与历史；`edit_image` 支持 `reference_images` 最多 4 张额外参考图，缺失附件在计费前失败） | ✅ |
 | 模板库（5 个源、2462 条案例，离线快照 + 关键词/分类检索 + 收藏 + 一键回填提示词；缩略图网格按上游形态，参考图按需从源站取并本地缓存，只允许各源固定域名） | ✅ |
 | 提示词增强 / 润色 / 从参考图反推（走渠道自带文本模型，系统提示词与规则照抄上游；无文本模型时明确报错不假装） | ✅ |
 | 无限画布（页面 CRUD + 乐观锁 revision、提示词/配置/图片三类节点、节点连线、拖拽与缩放平移、连线勾选作为生成输入、生成结果自动成新增节点、素材池） | ✅ |

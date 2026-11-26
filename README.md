@@ -56,9 +56,14 @@ hermes plugins install mokasoul/hermes-imagegen --enable
 
 ```bash
 # 改完源码、PR 合并进 main 之后
-hermes plugins check-updates                 # 看 revision 是否落后
-hermes plugins update hermes-imagegen        # 每个 profile 各一次
+hermes plugins update hermes-imagegen --force   # 每个 profile 各一次
 ```
+
+`--force` 是必须的：安装/更新期的安全扫描把本插件判为 **caution**（16 条 findings，全部落在
+`dashboard/imagegen_backend/templates_data/*.json` 这 2462 条第三方提示词快照上 —— 素材文本里的
+零宽字符被判 injection、带 URL 的提示词被判 exfiltration，另有 `tests/` 里的路径穿越用例与
+`engine.py` 的 PNG 魔数比较），而扫描只有全局开关 `plugins.scan_on_install`，没有单插件豁免。
+不加 `--force` 时命令会以 review findings 中止，Desktop 里的一键更新同样会被拦。
 
 然后**重启 Hermes Desktop**：网关只在启动时扫描插件目录并加载后端模块与样式表清单，
 重载桌面插件不会重新挂载后端路由。

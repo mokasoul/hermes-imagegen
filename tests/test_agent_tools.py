@@ -32,7 +32,7 @@ def _setup_channel(models_list=("gpt-image-2", "gpt-image-2.5"), default="gpt-im
 def fake_engine(monkeypatch):
     calls = []
 
-    async def generate(channel, request, references=None, mask=None, cancel=None, transport=None):
+    async def generate(channel, request, references=None, mask=None, cancel=None, transport=None, **kwargs):
         calls.append({"channel": channel, "request": dict(request), "references": list(references or [])})
         return [engine.GeneratedImage(data=png_bytes(4, 4), mime="image/png")]
 
@@ -128,7 +128,7 @@ def test_cancel_unknown_task_raises(fake_engine):
 def test_failure_is_reported_not_swallowed(monkeypatch):
     _setup_channel()
 
-    async def failing(channel, request, references=None, mask=None, cancel=None, transport=None):
+    async def failing(channel, request, references=None, mask=None, cancel=None, transport=None, **kwargs):
         raise engine.ImageGenError("上游拒绝", "upstream-rejected")
 
     monkeypatch.setattr(engine, "generate", failing)
@@ -136,3 +136,56 @@ def test_failure_is_reported_not_swallowed(monkeypatch):
     assert "状态：failed" in text
     assert "上游拒绝" in text
     assert "upstream-rejected" in text
+
+
+def test_edit_sends_extra_reference_images(fake_engine, tmp_path):
+    _setup_channel()
+    source = tmp_path / "source.png"
+    source.write_bytes(png_bytes(3, 3))
+    extra_one = tmp_path / "style-a.png"
+    extra_one.write_bytes(png_bytes(5, 4))
+    extra_two = tmp_path / "style-b.png"
+    extra_two.write_bytes(png_bytes(6, 2))
+    _run(
+        agent_tools.handle_edit_image(
+            {
+                "prompt": "按这两张的风格重画",
+                "source_image": str(source),
+                "reference_images": [str(extra_one), str(extra_two)],
+            }
+        )
+    )
+    references = fake_engine[-1]["references"]
+    assert [ref.data for ref in references] == [png_bytes(3, 3), png_bytes(5, 4), png_bytes(6, 2)]
+
+
+def test_edit_refuses_more_than_four_extra_references(fake_engine, tmp_path):
+    _setup_channel()
+    source = tmp_path / "source.png"
+    source.write_bytes(png_bytes(3, 3))
+    with pytest.raises(ValueError) as caught:
+        _run(
+            agent_tools.handle_edit_image(
+                {
+                    "prompt": "x",
+                    "source_image": str(source),
+                    "reference_images": [str(source)] * 5,
+                }
+            )
+        )
+    assert "最多 4 张" in str(caught.value)
+    assert fake_engine == [], "a rejected call must not reach the engine"
+
+
+def test_edit_fails_before_submitting_when_an_extra_reference_is_missing(fake_engine, tmp_path):
+    _setup_channel()
+    source = tmp_path / "source.png"
+    source.write_bytes(png_bytes(3, 3))
+    with pytest.raises(ValueError) as caught:
+        _run(
+            agent_tools.handle_edit_image(
+                {"prompt": "x", "source_image": str(source), "reference_images": [str(tmp_path / "ghost.png")]}
+            )
+        )
+    assert "找不到源图" in str(caught.value)
+    assert fake_engine == [], "attachment failures must happen before the job is billed"

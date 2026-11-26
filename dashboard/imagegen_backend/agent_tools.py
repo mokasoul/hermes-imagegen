@@ -42,6 +42,13 @@ _QUALITY_PROP = _str("清晰度：auto / 1k / 2k / 4k。")
 _COUNT_PROP = {"type": "integer", "description": "张数 1–4，默认 1。"}
 _DETAIL_PROP = _str("上游 detail 取值（如 standard、high），可选。")
 _WAIT_PROP = {"type": "boolean", "description": "是否等图出来再返回，默认 true；false 则只返回 task_id。"}
+_REFERENCE_IMAGES_PROP = {
+    "type": "array",
+    "items": {"type": "string"},
+    "maxItems": 4,
+    "description": "额外参考图（最多 4 张），与 source_image 一起提交；每项取值同 source_image。"
+    "gpt-image / seedream / SenseNova 会发送全部参考；grok-imagine / nanobanana / minimax / dall-e / qwen 只用 source_image。",
+}
 
 GENERATE_IMAGE_SCHEMA = _schema(
     "generate_image",
@@ -64,10 +71,13 @@ GENERATE_IMAGE_SCHEMA = _schema(
 EDIT_IMAGE_SCHEMA = _schema(
     "edit_image",
     "对一张已有图片做图生图改图。source_image 接受：本插件返回的 image_id、本地文件绝对路径、"
-    "http(s) 图片地址，或 data:image/... data URL。默认等到出图并返回新的 image_id。",
+    "http(s) 图片地址，或 data:image/... data URL。默认等到出图并返回新的 image_id。"
+    "参考图能力随模型不同：gpt-image / seedream / SenseNova 会发送 source_image 与 reference_images 全部；"
+    "grok-imagine / nanobanana / minimax / dall-e / qwen 只用 source_image。",
     {
         "prompt": _str("要怎么改这张图。"),
         "source_image": _str("源图：image_id / 本地路径 / http(s) URL / data URL。"),
+        "reference_images": _REFERENCE_IMAGES_PROP,
         "channel": _CHANNEL_PROP,
         "model": _MODEL_PROP,
         "size": _SIZE_PROP,
@@ -272,8 +282,20 @@ async def handle_generate_image(args: dict[str, Any], **_kwargs: Any) -> str:
 
 async def handle_edit_image(args: dict[str, Any], **_kwargs: Any) -> str:
     common = _common_args(args)
-    reference = await _source_image_reference(args.get("source_image"))
-    job = _submit(mode="edit", references=[reference], **common)
+    raw_extra = args.get("reference_images")
+    if raw_extra is None:
+        raw_extra = []
+    if not isinstance(raw_extra, list):
+        raise ValueError("reference_images 必须是数组")
+    if len(raw_extra) > 4:
+        raise ValueError("reference_images 最多 4 张")
+    # Every reference is read before the job is submitted: a missing attachment
+    # fails here, before anything is sent upstream or billed.
+    source, *extras = await asyncio.gather(
+        _source_image_reference(args.get("source_image")),
+        *(_source_image_reference(value) for value in raw_extra),
+    )
+    job = _submit(mode="edit", references=[source, *extras], **common)
     if not common["wait"]:
         return f"已提交改图任务\ntask_id：{job['id']}\n用 get_image_generation_task 查询进度。"
     return _describe(await _wait_for(job["id"]))

@@ -56,6 +56,9 @@ class Job:
     duration_ms: int | None = None
     error: str | None = None
     error_code: str | None = None
+    # Set when a fan-out batch lost some of its parallel requests: those
+    # positions have no image even though the job itself succeeded.
+    partial_error: str | None = None
     generation_id: str | None = None
     images: list[dict[str, Any]] = field(default_factory=list)
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
@@ -76,6 +79,7 @@ class Job:
             "duration_ms": self.duration_ms,
             "error": self.error,
             "error_code": self.error_code,
+            "partial_error": self.partial_error,
             "generation_id": self.generation_id,
             "images": self.images,
         }
@@ -162,8 +166,16 @@ class JobRunner:
             "prompt": job.prompt,
             **job.params,
         }
+        outcome: dict[str, Any] = {}
         try:
-            images = await engine.generate(channel, request, references=job.references, mask=job.mask, cancel=job.cancel_event)
+            images = await engine.generate(
+                channel,
+                request,
+                references=job.references,
+                mask=job.mask,
+                cancel=job.cancel_event,
+                outcome=outcome,
+            )
         except asyncio.CancelledError:
             job.status = "cancelled"
             job.duration_ms = int((time.time() - job.started_at) * 1000)
@@ -197,6 +209,7 @@ class JobRunner:
             return
 
         job.status = "succeeded"
+        job.partial_error = outcome.get("partial_error")
         job.duration_ms = int((time.time() - job.started_at) * 1000)
         record = self.store.finish_generation(
             job.generation_id or "",

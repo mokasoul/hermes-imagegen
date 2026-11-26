@@ -491,6 +491,10 @@
   width: 320px;
 }
 
+.ig-root .w-\[70px\] {
+  width: 70px;
+}
+
 .ig-root .w-auto {
   width: auto;
 }

@@ -21,6 +21,8 @@ from . import paths
 SECRET_FIELDS = ("api_key",)
 MASK = "***"
 DEFAULT_PROTOCOL = "auto"
+DOWNLOAD_TIMEOUT_DEFAULT_S = 60.0
+DOWNLOAD_TIMEOUT_RANGE_S = (10.0, 600.0)
 VALID_PROTOCOLS = ("auto", "images", "chat-completions")
 
 
@@ -45,6 +47,20 @@ def normalize_api_url(value: str) -> str:
     return url.rstrip("/")
 
 
+def _clean_download_timeout(value: Any) -> float:
+    """Per-channel result-download budget in seconds; 10–600, default 60."""
+    if value is None or value == "":
+        return DOWNLOAD_TIMEOUT_DEFAULT_S
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as error:
+        raise SettingsError("download_timeout_s 必须是 10–600 的数字") from error
+    low, high = DOWNLOAD_TIMEOUT_RANGE_S
+    if not low <= number <= high:
+        raise SettingsError(f"download_timeout_s 必须在 {low:g}–{high:g} 秒之间")
+    return number
+
+
 def normalize_channel(payload: Mapping[str, Any], existing: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Validate one channel payload, carrying secrets over from ``existing``."""
     base: dict[str, Any] = dict(existing or {})
@@ -60,6 +76,9 @@ def normalize_channel(payload: Mapping[str, Any], existing: Mapping[str, Any] | 
         "default_model": _clean_str(payload.get("default_model", base.get("default_model", "")), 200),
         "watermark": payload.get("watermark", base.get("watermark")),
         "prompt_extend": payload.get("prompt_extend", base.get("prompt_extend")),
+        "download_timeout_s": _clean_download_timeout(
+            payload.get("download_timeout_s", base.get("download_timeout_s"))
+        ),
     }
     if channel["protocol"] not in VALID_PROTOCOLS:
         raise SettingsError(f"protocol 必须是 {'/'.join(VALID_PROTOCOLS)}")
@@ -93,6 +112,7 @@ def mask_channel(channel: Mapping[str, Any]) -> dict[str, Any]:
         "default_model": channel.get("default_model", ""),
         "watermark": channel.get("watermark"),
         "prompt_extend": channel.get("prompt_extend"),
+        "download_timeout_s": channel.get("download_timeout_s", DOWNLOAD_TIMEOUT_DEFAULT_S),
         "api_key_env": env_name,
         "has_api_key": bool(key) or bool(env_name),
         "api_key_hint": f"…{key[-4:]}" if len(key) >= 8 else "",
@@ -152,6 +172,11 @@ class Settings:
             "default_model": _clean_str(channel.get("default_model"), 200),
             "watermark": channel.get("watermark") if isinstance(channel.get("watermark"), bool) else None,
             "prompt_extend": channel.get("prompt_extend") if isinstance(channel.get("prompt_extend"), bool) else None,
+            "download_timeout_s": channel.get("download_timeout_s")
+            if isinstance(channel.get("download_timeout_s"), (int, float))
+            and not isinstance(channel.get("download_timeout_s"), bool)
+            and 10 <= float(channel.get("download_timeout_s")) <= 600
+            else DOWNLOAD_TIMEOUT_DEFAULT_S,
         }
         if out["protocol"] not in VALID_PROTOCOLS:
             out["protocol"] = DEFAULT_PROTOCOL

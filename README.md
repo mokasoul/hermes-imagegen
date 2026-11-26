@@ -46,6 +46,23 @@ hermes plugins install mokasoul/hermes-imagegen --enable
 然后在 Hermes Desktop → **Capabilities → Plugins** 里打开 `hermes-imagegen`
 （桌面半默认是关闭的，需要你手动开一次），必要时 ⌘K → **Reload desktop plugins**。
 
+### 更新与开发期
+
+插件按 **GitHub 标准安装**：每个 profile 一份实体副本，来源记为 git，revision 跟着提交走 ——
+所以 Desktop 的插件页能显示更新角标，`hermes plugins check-updates` 能判定新旧，
+`hermes plugins update hermes-imagegen` 能一键升级。
+
+工作副本与安装副本是两份，互不影响：
+
+```bash
+# 改完源码、PR 合并进 main 之后
+hermes plugins check-updates                 # 看 revision 是否落后
+hermes plugins update hermes-imagegen        # 每个 profile 各一次
+```
+
+然后**重启 Hermes Desktop**：网关只在启动时扫描插件目录并加载后端模块与样式表清单，
+重载桌面插件不会重新挂载后端路由。
+
 装好之后，配置入口是插件自己的工作台：添加渠道 → 填 API 地址与密钥 → 检测并选择模型 → 保存。
 
 ## 数据在哪

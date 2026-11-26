@@ -23,21 +23,35 @@ jobs:
         run: |
           cp desktop/plugin.js /tmp/plugin-check.mjs
           node --check /tmp/plugin-check.mjs
-      - name: Panel stylesheet is up to date
+      - name: Result layout table
+        run: node scripts/check_result_layout.mjs
+      - name: Stylesheets are up to date
         run: |
           python scripts/build_panel_css.py
-          git diff --exit-code desktop/panel.css
-          if grep -q "dsw-alias" desktop/panel.css; then
-            echo "panel.css still references DSH tokens" >&2
+          git diff --exit-code desktop/panel.css desktop/panel-results.css desktop/panel-menu.css desktop/panel-loading.css
+          if grep -q "dsw-alias" desktop/panel*.css; then
+            echo "a generated sheet still references DSH tokens" >&2
             exit 1
           fi
           python - <<'PY'
           import pathlib
-          text = pathlib.Path("desktop/panel.css").read_text()
-          assert text.count("{") == text.count("}"), "unbalanced braces in panel.css"
-          rules = [line for line in text.splitlines() if line.startswith(".")]
-          assert rules and all(line.startswith(".ig-root") for line in rules), "unscoped selector in panel.css"
-          print(f"panel.css ok: {len(rules)} scoped rules")
+          # Each generated sheet must stay scoped under the surface root it owns;
+          # the roots are distinct because upstream class names collide (both
+          # panel.module.css and studio-results.module.css define .card).
+          roots = {
+              "panel.css": ".ig-root",
+              "panel-results.css": ".ig-results",
+              "panel-menu.css": ".ig-menu",
+              "panel-loading.css": ".ig-loading",
+          }
+          for name, root in roots.items():
+              text = pathlib.Path("desktop", name).read_text()
+              assert text.count("{") == text.count("}"), f"unbalanced braces in {name}"
+              rules = [line for line in text.splitlines() if line.startswith(".")]
+              assert rules, f"no rules in {name}"
+              bad = [line for line in rules if not line.startswith(root)]
+              assert not bad, f"unscoped selector in {name}: {bad[:3]}"
+              print(f"{name} ok: {len(rules)} rules under {root}")
           PY
       - name: Utility stylesheet covers every class plugin.js uses
         run: |

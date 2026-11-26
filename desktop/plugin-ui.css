@@ -87,10 +87,6 @@
   cursor: move;
 }
 
-.ig-root .cursor-zoom-in {
-  cursor: zoom-in;
-}
-
 .ig-root .fixed {
   position: fixed;
 }
@@ -135,20 +131,12 @@
   gap: 8px;
 }
 
-.ig-root .gap-3 {
-  gap: 12px;
-}
-
 .ig-root .grid {
   display: grid;
 }
 
 .ig-root .grid-cols-\[repeat\(auto-fill,minmax\(200px,1fr\)\)\] {
   grid-template-columns: repeat(auto-fill,minmax(200px,1fr));
-}
-
-.ig-root .grid-cols-\[repeat\(auto-fill,minmax\(220px,1fr\)\)\] {
-  grid-template-columns: repeat(auto-fill,minmax(220px,1fr));
 }
 
 .ig-root .grid-cols-\[repeat\(auto-fill,minmax\(240px,1fr\)\)\] {
@@ -373,10 +361,6 @@
 
 .ig-root .py-1\.5 {
   padding-block: 6px;
-}
-
-.ig-root .py-16 {
-  padding-block: 64px;
 }
 
 .ig-root .py-2 {
